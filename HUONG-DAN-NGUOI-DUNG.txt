@@ -1,0 +1,102 @@
+THỰC XUẤT TOOL — Hướng dẫn dùng
+================================
+
+CÀI BẰNG BỘ CÀI (cách nhanh nhất)
+---------------------------------
+1. Chạy ThucXuatTool-Setup.exe.
+   (Windows có thể hiện SmartScreen: bấm "More info" → "Run anyway".)
+2. Bộ cài tự làm hết, không cần bấm gì:
+     - chép app vào %LOCALAPPDATA%\Programs\ThucXuatTool
+     - tạo lối tắt «Thực Xuất» ở Desktop và Start Menu
+     - cài Ollama nếu máy chưa có (~1,7 GB)
+     - tải model gemma3:4b (~3,4 GB, có thanh tiến độ)
+3. Cài xong bấm «Mở ứng dụng». Lần sau mở bằng lối tắt «Thực Xuất».
+
+Lần cài đầu cần mạng. Chạy lại Setup.exe = cập nhật bản mới,
+file config.json và thư mục KetQua vẫn giữ nguyên.
+
+CÁCH CÀI BẰNG FILE ZIP (nếu không dùng bộ cài)
+----------------------------------------------
+1. Giải nén file zip ra 1 folder riêng (không chạy trong .zip).
+2. Trong folder phải có ĐỦ 2 thứ cạnh nhau:
+      ThucXuatTool.exe
+      _internal\          ← folder này BẮT BUỘC, không được xóa/bỏ sót
+3. Double-click: ThucXuatTool.exe
+   (hoặc Chay-ThucXuatTool.bat)
+
+SAI → lỗi "Failed to load Python DLL ... _internal\python312.dll":
+  - Chỉ copy mỗi file .exe sang Desktop / Zalo → THIẾU _internal
+  - Phải copy CẢ folder sau khi giải nén
+
+Nếu đã có đủ _internal mà vẫn lỗi DLL:
+  Cài Microsoft Visual C++ Redistributable 2015-2022 (x64):
+  https://aka.ms/vs/17/release/vc_redist.x64.exe
+  Rồi mở lại app.
+
+MÁY ĐỌC ẢNH BẰNG OLLAMA (mặc định, không cần mạng)
+--------------------------------------------------
+App mặc định dùng model gemma3:4b chạy trên chính máy tính.
+
+Chỉ cần cài Ollama 1 lần: https://ollama.com/download
+Sau đó KHÔNG cần mở Ollama bằng tay:
+  - Mở app → app tự bật Ollama (chạy ẩn) và tự kiểm tra model.
+  - Nếu chưa có model, app hỏi «Tải ngay?» → bấm Yes là app tự tải
+    (khoảng 3.3 GB, chỉ 1 lần, có hiện % ở thanh dưới).
+  - Bấm «Tạo file Excel» lúc nào app cũng kiểm tra lại Ollama trước.
+
+Nếu muốn tự tải bằng tay, mở PowerShell:
+      ollama pull gemma3:4b
+
+Máy yếu / ảnh mờ: dùng model lớn hơn sẽ chính xác hơn:
+      ollama pull gemma3:12b
+rồi sửa «ollama_model» trong file config.json (cạnh ThucXuatTool.exe)
+thành gemma3:12b.
+
+CÁCH DÙNG
+---------
+1. Thêm Excel gốc (DanhSachChiTietDatHangNhap_*.xlsx)
+   — có thể thêm 1 lúc nhiều phiếu, app tự chia ảnh theo phiếu.
+2. Thêm tất cả ảnh phiếu
+3. Bấm «Tạo file Excel»
+4. Kết quả: PDNxxxxx_MaSanPham_ThucXuat.xlsx trong thư mục «KetQua»
+   (nằm cạnh ThucXuatTool.exe).
+   Bấm «Mở thư mục xuất» để mở thư mục này trong Explorer.
+5. Xem bảng «Kết quả»: nháy đúp 1 dòng để sửa ô «Đọc từ ảnh»
+   nếu AI đọc sai — app tự lưu lại file Excel.
+   Dòng chữ xám = bị bỏ (X / ô trống).
+
+XUẤT KÈM TÊN SẢN PHẨM (để đối chiếu)
+------------------------------------
+- Tick «Xuất kèm cột Tên sản phẩm» trước khi bấm «Tạo file Excel»
+  -> file có 3 cột: Mã sản phẩm | Tên sản phẩm | Thực xuất
+     (tên file có thêm _KemTen, không ghi đè file 2 cột).
+- File 2 cột: dùng nhập KiotViet.
+- File 3 cột: dùng rà soát, đối chiếu phiếu giấy.
+- Đã chạy xong mới muốn bản còn lại: đổi tick rồi bấm
+  «Xuất lại file kết quả» — không phải đọc ảnh lại.
+
+CẬP NHẬT PHẦN MỀM
+------------------
+- Mở app: app tự kiểm tra bản mới (cần mạng).
+  Không có mạng thì app vẫn chạy bình thường.
+- Có bản mới: nút «Cập nhật lên v...» hiện ở hàng tuỳ chọn.
+  Bấm -> app tự tải (có %), thay thế rồi mở lại bản mới.
+- File kết quả trong thư mục KetQua và config.json KHÔNG bị mất.
+- Muốn kiểm tra tay: bấm nút «Kiểm tra cập nhật».
+
+CÁCH TÍNH SỐ LƯỢNG
+------------------
+- Ghi X                  -> bỏ dòng
+- Ghi 3T*3               -> 9   (có dấu nhân thì nhân)
+- Ghi 5T x 24            -> 120 (dấu x cũng là nhân)
+- Ghi 10 gói, 30kg       -> 10, 30 (đã ghi đơn vị lẻ thì giữ nguyên)
+- Ghi 2T, ĐVT thùng 40 gói -> 80 (nhân hệ số quy đổi trong ĐVT)
+- Ghi 2T, ĐVT túi 2kg    -> 2 (2kg là trọng lượng, không nhân)
+- Chỉ có dấu tick ✓      -> lấy số lượng đặt
+Cột ĐVT trong bảng Kết quả giúp bạn đối chiếu trước khi nhập KiotViet.
+
+Lưu ý:
+- Model 4b đọc khoảng 80–90% số dòng; luôn kiểm tra bảng Kết quả.
+- Windows cảnh báo «Unknown publisher» → More info → Run anyway.
+
+Hỗ trợ: liên hệ người gửi bản cài.

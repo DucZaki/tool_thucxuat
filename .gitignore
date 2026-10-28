@@ -1,0 +1,7 @@
+build/
+dist/
+*.zip
+__pycache__/
+*.pyc
+config.json
+KetQua/
