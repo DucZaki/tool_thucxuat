@@ -49,6 +49,7 @@ jobs:
             "exists=false" >> $env:GITHUB_OUTPUT
             Write-Host "Se tao Release $tag."
           }
+          exit 0
 
       - uses: actions/setup-python@v5
         if: steps.check.outputs.exists == 'false'
