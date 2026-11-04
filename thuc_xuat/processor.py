@@ -51,6 +51,14 @@ _WEIGHT_RE = re.compile(
 )
 
 
+# Ký tự vô hình hay lọt vào ô mã hàng (copy từ web/chat) → coi như rỗng.
+_ZERO_WIDTH_RE = re.compile(r"[\u200b-\u200f\u2060\ufeff]")
+
+
+def _clean_text(value: Any) -> str:
+  return _ZERO_WIDTH_RE.sub("", str(value or "")).strip()
+
+
 def _to_number(text: str) -> int | float | None:
   """'5' -> 5, '5.5' / '5,5' -> 5.5 (giữ số lẻ cho hàng kg)."""
   try:
@@ -80,6 +88,40 @@ def pack_factor(unit: Any) -> int | float | None:
     if m:
       factor = _to_number(m.group(1).replace(",", "."))
   return factor
+
+
+def _looks_like_t_read_as_7(compact: str, ordered_qty: Any) -> bool:
+  """'47' khi SL đặt là 4 → gần như chắc chắn là '4T' (model đọc T thành 7)."""
+  if not re.fullmatch(r"\d+7", compact) or len(compact) < 2:
+    return False
+  try:
+    ordered = float(ordered_qty)  # type: ignore[arg-type]
+  except (TypeError, ValueError):
+    return False
+  if ordered <= 0:
+    return False
+  lead = int(compact[:-1])
+  whole = int(compact)
+  if lead <= 0:
+    return False
+  return abs(lead - ordered) < abs(whole - ordered)
+
+
+def _prefer_ordered(whole: int, lead: int, ordered_qty: Any, prefer_lead: bool) -> int:
+  """Chọn cách đọc khớp SL đặt: '21x24' → 21×24 hay 2T×24."""
+  try:
+    ordered = float(ordered_qty)  # type: ignore[arg-type]
+  except (TypeError, ValueError):
+    ordered = 0.0
+  if ordered > 0 and lead > 0:
+    lead_diff = abs(lead - ordered)
+    whole_diff = abs(whole - ordered)
+    if lead_diff < whole_diff:
+      return lead
+    if lead_diff == whole_diff and prefer_lead:
+      return lead
+    return whole
+  return lead if prefer_lead and lead > 0 else whole
 
 
 def _written_unit(text: str) -> str:
@@ -135,18 +177,25 @@ def parse_qty(
   base: int | float | None = None
   factors: list[float] = []
 
-  # "37X6" / "3TX6" = "3T x 6" (model hay đọc chữ T thành 7).
+  # "37X6" / "21x24" = "3T x 6" / "2T x 24" (model hay đọc chữ T thành 7 hoặc 1).
   compact = re.sub(r"\s+", "", s.upper())
-  ocr_t = re.match(r"^(\d+)7[X×*](\d+(?:[.,]\d+)?)$", compact)
+  ocr_t = re.match(r"^(\d+)([17])[X×*](\d+(?:[.,]\d+)?)$", compact)
   if ocr_t:
-    base = _to_number(ocr_t.group(1))
-    factors = [float(ocr_t.group(2).replace(",", "."))]
+    whole = int(ocr_t.group(1) + ocr_t.group(2))
+    lead = int(ocr_t.group(1))
+    base = _prefer_ordered(whole, lead, ordered_qty, prefer_lead=ocr_t.group(2) == "7")
+    factors = [float(ocr_t.group(3).replace(",", "."))]
   else:
     m = re.match(r"^(\d+(?:[.,]\d+)?)", s.replace(",", "."))
     if not m:
       return None
     base = _to_number(m.group(1))
     factors = _explicit_factors(s)
+    # "47" mà SL đặt là 4 → sửa thành "4T" (AI đọc chữ T viết tay thành số 7).
+    if not factors and _looks_like_t_read_as_7(compact, ordered_qty):
+      fixed = _to_number(compact[:-1])
+      if fixed is not None:
+        base = fixed
 
   if base is None:
     return None
@@ -168,24 +217,35 @@ def parse_qty(
 
 
 
+def expected_qty(ordered_qty: Any, unit: Any = None) -> float | None:
+  """SL đặt quy về đơn vị lẻ (để phát hiện dòng bị đọc sai số)."""
+  try:
+    ordered = float(ordered_qty)
+  except (TypeError, ValueError):
+    return None
+  if ordered <= 0:
+    return None
+  return ordered * float(pack_factor(unit) or 1)
+
+
 def load_products(source_path: str | Path) -> list[Product]:
   wb = load_workbook(str(source_path), data_only=True)
   ws = wb.active
   products: list[Product] = []
   for r in range(2, (ws.max_row or 1) + 1):
-    code = ws.cell(r, 1).value
-    if code is None or str(code).strip() == "":
+    code = _clean_text(ws.cell(r, 1).value)
+    if not code:
       continue
-    name = ws.cell(r, 2).value
-    unit = ws.cell(r, 3).value
+    name = _clean_text(ws.cell(r, 2).value)
+    unit = _clean_text(ws.cell(r, 3).value)
     ordered = ws.cell(r, 4).value
     products.append(
       Product(
         stt=len(products) + 1,
-        code=str(code).strip(),
-        name=str(name or "").strip(),
+        code=code,
+        name=name,
         ordered_qty=ordered,
-        unit=str(unit or "").strip(),
+        unit=unit,
       )
     )
   wb.close()

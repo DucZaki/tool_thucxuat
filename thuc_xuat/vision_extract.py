@@ -30,6 +30,8 @@ Cột Số lượng in đã bị CHE TRẮNG trên ảnh — chỉ đọc cột 
 - KHÔNG lấy số in ở cột Số lượng.
 - Ô viết tay chỉ có dấu tick → "✓". Ô chỉ có X → "X".
 - Giữ số lẻ và đơn vị viết tay: "5,5", "14 con", "1T", "10H", "5T x 24".
+- Chữ T viết tay (viết tắt của «thùng») trông RẤT GIỐNG số 7. Phải ghi là T: "1T", "4T", "10T" — TUYỆT ĐỐI không ghi thành 17, 47, 107.
+- Không tự nhân/quy đổi, chỉ chép đúng ô viết tay.
 - Ô trống hoặc không đọc được → bỏ STT đó, KHÔNG bịa.
 - Chỉ dùng STT từ 1 đến {max_stt}.{stt_hint}
 
@@ -46,6 +48,7 @@ Cột Số lượng in đã bị CHE TRẮNG — chỉ đọc cột viết tay.
 1. Đọc mã PDN trên header ảnh (nếu có).
 2. Đọc STT và chép NGUYÊN VĂN ô THỰC XUẤT viết tay — không lấy cột Số lượng.
 3. Ô chỉ có dấu tick → "✓"; chỉ có X → "X"; giữ số lẻ và đơn vị ("5,5", "14 con", "1T"), giữ cả phần nhân ("3T*3", "5T x 24").
+   Chữ T viết tay (viết tắt «thùng») trông rất giống số 7 — ghi là T ("1T", "4T", "10T"), KHÔNG ghi thành 17, 47, 107.
 4. Không thấy PDN → chọn phiếu có tên hàng / STT khớp nhất với ảnh.
 5. Ô trống → bỏ STT đó, không bịa.
 

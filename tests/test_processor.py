@@ -1,7 +1,14 @@
 # -*- coding: utf-8 -*-
 import unittest
 
-from thuc_xuat.processor import Product, build_output, pack_factor, parse_qty
+from thuc_xuat.processor import (
+  Product,
+  build_output,
+  expected_qty,
+  load_products,
+  pack_factor,
+  parse_qty,
+)
 
 
 class ParseQtyTests(unittest.TestCase):
@@ -21,6 +28,7 @@ class ParseQtyTests(unittest.TestCase):
       "5TX24": 120,
       "37X6": 18,  # model đọc chữ T thành 7
       "3TX6": 18,
+      "21x24": 504,
     }
     for raw, expected in cases.items():
       with self.subTest(raw=raw):
@@ -80,6 +88,47 @@ class ParseQtyTests(unittest.TestCase):
     self.assertEqual(parse_qty("Y", 15), 15)
     self.assertEqual(parse_qty("y", 15), 15)
     self.assertEqual(parse_qty("✓", 5.5), 5.5)
+
+  def test_t_read_as_7_repaired_with_ordered_qty(self):
+    # AI đọc chữ T (thùng) thành 7: "47" khi SL đặt 4 → 4T
+    self.assertEqual(parse_qty("47", 4, "thùng 50 gói"), 200)
+    self.assertEqual(parse_qty("57", 5, "thùng"), 5)
+    self.assertEqual(parse_qty("17", 1, "thùng 12 lốc"), 12)
+    # "21x24" của phiếu đặt 2 thùng = 2T x 24
+    self.assertEqual(parse_qty("21x24", 2, "thùng (24 hộp)"), 48)
+    self.assertEqual(parse_qty("17x24", 1, "thùng (24 hộp)"), 24)
+    self.assertEqual(parse_qty("37X6", 20, "thùng 6 hộp"), 18)
+    # Số đọc đúng thì không sửa: đặt 50 thùng, phiếu ghi 57
+    self.assertEqual(parse_qty("57", 50, "thùng"), 57)
+    # Không có SL đặt thì giữ nguyên
+    self.assertEqual(parse_qty("47", None, "thùng 50 gói"), 2350)
+
+  def test_expected_qty(self):
+    self.assertEqual(expected_qty(7, "thùng 12 lốc"), 84)
+    self.assertEqual(expected_qty(5, "gói"), 5)
+    self.assertIsNone(expected_qty(None, "gói"))
+    self.assertIsNone(expected_qty(0, "gói"))
+
+
+class LoadProductsTests(unittest.TestCase):
+  def test_skip_blank_and_zero_width_code(self):
+    import tempfile
+    from pathlib import Path
+
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["Mã hàng", "Tên hàng", "ĐVT", "Số lượng"])
+    ws.append(["   ", "dòng rác", "gói", 1])
+    ws.append(["\u200b", "mã rỗng", "gói", 2])
+    ws.append(["SP1", "hàng thật", "gói", 3])
+    with tempfile.TemporaryDirectory() as d:
+      p = Path(d) / "t.xlsx"
+      wb.save(p)
+      products = load_products(p)
+    self.assertEqual([x.code for x in products], ["SP1"])
+    self.assertEqual(products[0].stt, 1)
 
 
 class BuildOutputTests(unittest.TestCase):

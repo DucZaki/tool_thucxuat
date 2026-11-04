@@ -24,6 +24,7 @@ from thuc_xuat.pipeline import BatchResult, ProcessResult, process_batch_like_ch
 from thuc_xuat.processor import (
   build_output,
   default_output_path,
+  expected_qty,
   load_products,
   parse_qty,
   save_output,
@@ -80,6 +81,10 @@ class ThucXuatApp(tk.Tk):
     ttk.Button(excel_bar, text="Xóa phiếu đã chọn", command=self.remove_selected_job).pack(
       side=tk.LEFT, padx=6
     )
+    self.clear_btn = ttk.Button(
+      excel_bar, text="Xóa tất cả", command=self.clear_all
+    )
+    self.clear_btn.pack(side=tk.LEFT)
     self.excel_summary = ttk.Label(excel_bar, text="0 phiếu", foreground="#666")
     self.excel_summary.pack(side=tk.LEFT, padx=10)
 
@@ -94,6 +99,9 @@ class ThucXuatApp(tk.Tk):
     ttk.Button(img_bar, text="Xóa ảnh đã chọn", command=self.remove_selected_image).pack(
       side=tk.LEFT
     )
+    ttk.Button(
+      img_bar, text="Xóa tất cả ảnh", command=self.clear_all_images
+    ).pack(side=tk.LEFT, padx=6)
     self.img_label = ttk.Label(img_bar, text="0 ảnh", foreground="#666")
     self.img_label.pack(side=tk.LEFT, padx=10)
 
@@ -155,6 +163,9 @@ class ThucXuatApp(tk.Tk):
       state=tk.DISABLED,
     )
     self.reexport_btn.pack(side=tk.LEFT)
+    ttk.Label(
+      result_bar, text="Dòng vàng = số bất thường", foreground="#b45309"
+    ).pack(side=tk.LEFT, padx=8)
     self.folder_label = ttk.Label(result_bar, text="", foreground="#666")
     self.folder_label.pack(side=tk.LEFT, padx=10)
     self._refresh_folder_label()
@@ -175,6 +186,7 @@ class ThucXuatApp(tk.Tk):
 
     self.tree.tag_configure("skip", foreground="#999")
     self.tree.tag_configure("edited", background="#eef7ee")
+    self.tree.tag_configure("warn", background="#fff4d6")
     self.tree.bind("<Double-1>", self._edit_selected_row)
 
     scroll = ttk.Scrollbar(preview, orient=tk.VERTICAL, command=self.tree.yview)
@@ -184,6 +196,7 @@ class ThucXuatApp(tk.Tk):
 
     self.status = ttk.Label(self, text="Sẵn sàng", padding=8, relief=tk.SUNKEN)
     self.status.pack(fill=tk.X, side=tk.BOTTOM)
+    self._update_status_ready()
 
   def _selected_job_index(self) -> int | None:
     sel = self.job_list.curselection()
@@ -540,6 +553,8 @@ class ThucXuatApp(tk.Tk):
       self.status.config(text=f"{len(self.jobs)} phiếu — thêm ảnh phiếu")
     elif self.all_images:
       self.status.config(text=f"{len(self.all_images)} ảnh — thêm Excel gốc")
+    else:
+      self.status.config(text="Sẵn sàng — thêm Excel gốc và ảnh phiếu")
     if self.all_images and not warp_available():
       self.status.config(
         text="CẢNH BÁO: thiếu OpenCV (cv2) — ảnh không được làm phẳng/che cột số lượng, kết quả sẽ kém chính xác"
@@ -585,6 +600,44 @@ class ThucXuatApp(tk.Tk):
     removed = self.jobs.pop(idx)
     self.results_by_excel.pop(removed.excel_path, None)
     self._refresh_job_list(select_index=min(idx, len(self.jobs) - 1) if self.jobs else None)
+    if not self.results_by_excel:
+      self.reexport_btn.config(state=tk.DISABLED)
+    self._update_status_ready()
+
+  def clear_all(self) -> None:
+    """Bỏ toàn bộ Excel + ảnh đã thêm (không xóa file trên máy)."""
+    if self._busy:
+      messagebox.showinfo(
+        "Đang xử lý",
+        "Chờ app đọc ảnh xong (hoặc bấm «Dừng») rồi hãy xóa danh sách.",
+      )
+      return
+    if not self.jobs and not self.all_images:
+      self.status.config(text="Danh sách đang trống")
+      return
+    n_jobs, n_images = len(self.jobs), len(self.all_images)
+    if not messagebox.askyesno(
+      "Xóa tất cả",
+      f"Bỏ {n_jobs} file Excel và {n_images} ảnh khỏi danh sách?\n\n"
+      "• Chỉ xóa khỏi app — KHÔNG xóa file trên máy.\n"
+      "• File kết quả đã tạo trong thư mục xuất vẫn giữ nguyên.\n"
+      "• Bảng xem trước sẽ trống để bạn chọn phiếu mới.",
+    ):
+      return
+
+    self.jobs.clear()
+    self.all_images.clear()
+    self.results_by_excel.clear()
+    self.preview_job = None
+    self.job_list.delete(0, tk.END)
+    self.img_list.delete(0, tk.END)
+    self.excel_summary.config(text="0 phiếu")
+    self.img_label.config(text="0 ảnh / 0 phiếu")
+    self.reexport_btn.config(state=tk.DISABLED)
+    self._fill_preview()
+    self.status.config(
+      text=f"Đã xóa {n_jobs} Excel + {n_images} ảnh — thêm phiếu mới để bắt đầu"
+    )
 
   def add_images(self) -> None:
     paths = filedialog.askopenfilenames(
@@ -596,16 +649,25 @@ class ThucXuatApp(tk.Tk):
     )
     if not paths:
       return
+    existing = {p.resolve() for p in self.all_images}
+    added = 0
     for p in paths:
       pp = Path(p)
-      if pp not in self.all_images:
-        self.all_images.append(pp)
-    if not self.jobs:
-      self._refresh_image_list()
-      self._update_status_ready()
-      return
+      try:
+        key = pp.resolve()
+      except OSError:
+        key = pp
+      if key in existing:
+        continue
+      existing.add(key)
+      self.all_images.append(pp)
+      added += 1
     self._refresh_image_list()
     self._update_status_ready()
+    if added:
+      self.status.config(
+        text=f"Đã thêm {added} ảnh — tổng {len(self.all_images)} ảnh"
+      )
 
   def remove_selected_image(self) -> None:
     sel = self.img_list.curselection()
@@ -615,6 +677,32 @@ class ThucXuatApp(tk.Tk):
       del self.all_images[idx]
       self.img_list.delete(idx)
     self._update_status_ready()
+
+  def clear_all_images(self) -> None:
+    """Bỏ toàn bộ ảnh đã thêm (giữ Excel và kết quả đã đọc)."""
+    if self._busy:
+      messagebox.showinfo(
+        "Đang xử lý",
+        "Chờ app đọc ảnh xong (hoặc bấm «Dừng») rồi hãy xóa ảnh.",
+      )
+      return
+    if not self.all_images:
+      self.status.config(text="Chưa có ảnh nào để xóa")
+      return
+    n_images = len(self.all_images)
+    if not messagebox.askyesno(
+      "Xóa tất cả ảnh",
+      f"Bỏ {n_images} ảnh khỏi danh sách?\n\n"
+      "• Chỉ xóa khỏi app — KHÔNG xóa file trên máy.\n"
+      "• Excel, kết quả đã đọc và file trong thư mục xuất vẫn giữ nguyên.",
+    ):
+      return
+    self.all_images.clear()
+    self._refresh_image_list()
+    self._update_status_ready()
+    self.status.config(
+      text=f"Đã xóa {n_images} ảnh — thêm ảnh mới để chạy tiếp"
+    )
 
   def show_help(self) -> None:
     messagebox.showinfo(
@@ -633,11 +721,14 @@ class ThucXuatApp(tk.Tk):
       "Quy tắc:\n"
       "• X → bỏ dòng\n"
       "• Có dấu nhân thì nhân: 3T*3 → 9, 5T x 24 → 120\n"
+      "• Chữ T = «thùng»: 2T + ĐVT «thùng 40 gói» → 80\n"
+      "  (AI hay đọc T thành 7 — app tự sửa khi SL đặt khớp)\n"
       "• Ghi đơn vị lẻ thì giữ nguyên: 10 gói → 10, 30kg → 30\n"
-      "• Ghi đơn vị ngoài thì nhân hệ số trong ĐVT:\n"
-      "    «thùng 40 gói» + 2T → 80\n"
-      "    «túi 2kg» + 3T → 3 (2kg là trọng lượng, bỏ qua)\n"
       "• Chỉ tick ✓ → lấy số lượng đặt\n\n"
+      "Dòng tô VÀNG = số xuất lớn bất thường so với SL đặt\n"
+      "(nghi AI đọc sai) — nháy đúp để sửa tay.\n"
+      "Nút «Xóa tất cả» bỏ hết Excel + ảnh khỏi danh sách\n"
+      "(không xóa file trên máy).\n\n"
       "AI: Ollama local (gemma3:4b) — không cần mạng.\n"
       "App tự bật Ollama và tự kiểm tra model khi mở.\n"
       "Đổi model: sửa «ollama_model» trong config.json cạnh app\n"
@@ -818,7 +909,14 @@ class ThucXuatApp(tk.Tk):
     for p in products:
       raw = thuc_xuat_map.get(p.stt, "")
       qty = parse_qty(raw, p.ordered_qty, p.unit)
-      tag = "skip" if qty is None else ""
+      tags: list[str] = []
+      if qty is None:
+        tags.append("skip")
+      else:
+        expected = expected_qty(p.ordered_qty, p.unit)
+        # Số xuất lớn bất thường so với SL đặt = nghi AI đọc sai (vd "4T" → "47").
+        if expected and qty > expected * 5 and qty - expected > 20:
+          tags.append("warn")
       self.tree.insert(
         "",
         tk.END,
@@ -831,7 +929,7 @@ class ThucXuatApp(tk.Tk):
           raw,
           qty if qty is not None else "",
         ),
-        tags=(tag,) if tag else (),
+        tags=tuple(tags),
       )
 
   def _edit_selected_row(self, _event=None) -> None:
@@ -848,6 +946,8 @@ class ThucXuatApp(tk.Tk):
       )
       return
     values = self.tree.item(sel[0], "values")
+    if len(values) < 3:
+      return
     try:
       stt = int(values[0])
     except (TypeError, ValueError, IndexError):
