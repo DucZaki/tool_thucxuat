@@ -1,5 +1,7 @@
 build/
 dist/
+dist_build/
+build_verify/
 *.zip
 __pycache__/
 *.pyc

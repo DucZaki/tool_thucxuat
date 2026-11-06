@@ -11,7 +11,6 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import threading
 import time
 from pathlib import Path
@@ -22,6 +21,7 @@ import requests
 
 from thuc_xuat.cancel import CancelledByUser, check_cancel
 from thuc_xuat.config import get_ollama_settings
+from thuc_xuat.proc import popen
 
 CONNECT_TIMEOUT = 5.0
 SERVER_WAIT_SECONDS = 40.0
@@ -81,14 +81,13 @@ def find_ollama_exe() -> str | None:
 
 def _spawn_server(exe: str) -> None:
   """Chạy `ollama serve` ẩn, tách khỏi app (app tắt vẫn còn chạy cho lần sau)."""
-  kwargs: dict[str, Any] = {
-    "stdin": subprocess.DEVNULL,
-    "stdout": subprocess.DEVNULL,
-    "stderr": subprocess.DEVNULL,
-  }
-  if sys.platform == "win32":
-    kwargs["creationflags"] = 0x00000008 | 0x08000000  # DETACHED_PROCESS | CREATE_NO_WINDOW
-  subprocess.Popen([exe, "serve"], **kwargs)
+  popen(
+    [exe, "serve"],
+    detached=True,
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+  )
 
 
 def ensure_server(

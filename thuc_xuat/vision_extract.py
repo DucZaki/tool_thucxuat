@@ -38,23 +38,6 @@ Cột Số lượng in đã bị CHE TRẮNG trên ảnh — chỉ đọc cột 
 Trả JSON thuần (không markdown):
 {{"thuc_xuat": {{"17": "10", "18": "X"}}}}"""
 
-OLLAMA_BATCH_PROMPT = """Bạn là OCR phiếu xuất kho Việt Nam. Ảnh là MỘT PHẦN của một trang phiếu.
-
-Các phiếu cần đọc:
-{orders_context}
-
-Bảng có các cột: STT | Tên hàng | Số lượng (in) | THỰC XUẤT (viết tay) | Ghi chú.
-Cột Số lượng in đã bị CHE TRẮNG — chỉ đọc cột viết tay.
-1. Đọc mã PDN trên header ảnh (nếu có).
-2. Đọc STT và chép NGUYÊN VĂN ô THỰC XUẤT viết tay — không lấy cột Số lượng.
-3. Ô chỉ có dấu tick → "✓"; chỉ có X → "X"; giữ số lẻ và đơn vị ("5,5", "14 con", "1T"), giữ cả phần nhân ("3T*3", "5T x 24").
-   Chữ T viết tay (viết tắt «thùng») trông rất giống số 7 — ghi là T ("1T", "4T", "10T"), KHÔNG ghi thành 17, 47, 107.
-4. Không thấy PDN → chọn phiếu có tên hàng / STT khớp nhất với ảnh.
-5. Ô trống → bỏ STT đó, không bịa.
-
-Trả JSON thuần:
-{{"pdn": "PDN014331", "thuc_xuat": {{"1": "10", "2": "X"}}}}"""
-
 OLLAMA_ASSIGN_PROMPT = """Ảnh là một trang bảng phiếu xuất kho Việt Nam.
 
 1. Đọc STT của dòng đầu tiên (số ở cột ngoài cùng bên trái).
@@ -77,9 +60,11 @@ def _parse_thuc_xuat_dict(raw: dict) -> dict[int, str]:
       continue
     try:
       key_text = str(k).strip()
-      if not re.fullmatch(r"\d{1,4}[.)]?", key_text):
+      # Chấp nhận "10", "10.", "10)", "10:", "10 -" (model hay thêm dấu).
+      m = re.match(r"^(\d{1,4})\s*[.)\]:\-]?$", key_text)
+      if not m:
         continue
-      stt = int(re.sub(r"\D", "", key_text) or 0)
+      stt = int(m.group(1))
     except (TypeError, ValueError):
       continue
     if stt > 0:
@@ -106,6 +91,8 @@ def _normalize_ollama_value(value: str) -> str:
   → quy về "X" để đúng quy tắc: có X là bỏ dòng.
   """
   s = str(value or "").strip().strip('"').strip("'").strip()
+  # Dấu câu thừa cuối giá trị ("10.", "X,", "✓.") — bỏ để khớp quy tắc.
+  s = s.strip(" .,;:")
   if not s:
     return ""
   if _X_ONLY_RE.fullmatch(s):
@@ -161,37 +148,6 @@ def _parse_ollama_order_response(
     if norm:
       out[stt] = norm
   return pdn, out
-
-
-def build_orders_context(excel_paths: list[Path]) -> str:
-  from thuc_xuat.image_match import pdn_from_excel
-  from thuc_xuat.processor import load_products
-
-  lines: list[str] = []
-  for path in excel_paths:
-    pdn = pdn_from_excel(path) or path.stem
-    products = load_products(path)
-    n = len(products)
-    lines.append(f"### {pdn} — {n} SP (STT 1..{n})")
-    if products:
-      for stt in (1, 2, n):
-        if 1 <= stt <= n:
-          p = products[stt - 1]
-          lines.append(f"  STT {stt}: {p.code} | {p.name[:45]}")
-  return "\n".join(lines)
-
-
-def _sample_lines(products, max_lines: int = 3) -> str:
-  from thuc_xuat.processor import Product
-
-  if not products:
-    return ""
-  lines: list[str] = []
-  for i in [0, 1, len(products) - 1]:
-    if 0 <= i < len(products) and len(lines) < max_lines:
-      p: Product = products[i]
-      lines.append(f"  STT {p.stt}: {p.code} | {p.name[:45]}")
-  return "\n".join(lines)
 
 
 def _natural_key(name: str) -> list:
@@ -357,14 +313,24 @@ def _assign_pages_to_orders(
   orders: list[tuple[str, list[str]]] = []
   for excel in excel_paths:
     pdn = (pdn_from_excel(excel) or excel.stem).upper()
-    names = [_norm_name(p.name) for p in load_products(excel)]
+    products = load_products(excel)
+    # Danh sách tên xếp theo STT (dòng trống giữa bảng để chỗ trống).
+    max_stt = max((p.stt for p in products), default=0)
+    names = [""] * max_stt
+    for p in products:
+      if 1 <= p.stt <= max_stt:
+        names[p.stt - 1] = _norm_name(p.name)
     orders.append((pdn, names))
 
   assigned: dict[str, list[Path]] = {}
   for i, img in enumerate(images, 1):
     check_cancel(cancel_event)
-    band = prepare_page(img, cfg["bands"])[0]
     prog(f"Đang nhận diện ảnh {i}/{len(images)}: {img.name}...")
+    try:
+      band = prepare_page(img, cfg["bands"])[0]
+    except Exception as exc:  # ảnh hỏng → bỏ qua, các ảnh khác vẫn chạy
+      prog(f"Cảnh báo: bỏ ảnh {img.name} — không đọc được file ảnh ({exc})")
+      continue
     try:
       text = chat_vision(
         OLLAMA_ASSIGN_PROMPT,
@@ -455,14 +421,21 @@ def _extract_one_ollama(
   from thuc_xuat.processor import load_products
 
   pdn = (pdn_from_excel(excel) or excel.stem).upper()
-  max_stt = len(load_products(excel))
+  _products = load_products(excel)
+  max_stt = max((p.stt for p in _products), default=0)
   collected: list[dict[int, str]] = []
   empty_images = 0
   skipped_images = 0
   for i, img in enumerate(images, 1):
     check_cancel(cancel_event)
+    try:
+      bands = prepare_page(img, cfg["bands"])
+    except Exception as exc:  # ảnh hỏng/định dạng lạ → bỏ ảnh, không bỏ cả phiếu
+      empty_images += 1
+      prog(f"Cảnh báo: bỏ ảnh {img.name} — không đọc được file ảnh ({exc})")
+      continue
     img_maps: list[dict[int, str]] = []
-    for band in prepare_page(img, cfg["bands"]):
+    for band in bands:
       prompt = OLLAMA_SINGLE_PROMPT.format(
         pdn=pdn, max_stt=max_stt, stt_hint=""
       )

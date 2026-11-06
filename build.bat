@@ -34,6 +34,7 @@ echo [3/5] Them file huong dan...
 copy /Y config.json.example "%OUT%\config.json.example" >nul
 copy /Y HUONG-DAN-NGUOI-DUNG.txt "%OUT%\" >nul
 copy /Y Chay-ThucXuatTool.bat "%OUT%\" >nul
+copy /Y Chay-ThucXuatTool.vbs "%OUT%\" >nul
 REM Bo file cua may dev neu co (khong dua vao ban phat hanh)
 if exist "%OUT%\config.json" del "%OUT%\config.json"
 if exist "%OUT%\KetQua" rmdir /S /Q "%OUT%\KetQua"

@@ -73,20 +73,18 @@ Thư mục xuất đổi được trong `config.json` (`output_dir`), mặc đ�
 |-----------------------|---------|
 | `X` / `x` | Bỏ dòng |
 | `3T*3`, `5T x 24`, `3TX6` | Có dấu nhân thì nhân: 9, 120, 18 |
-| `10 gói`, `30kg`, `18 quả` | Ghi đơn vị lẻ thì giữ nguyên: 10, 30, 18 |
-| `2T` + ĐVT `thùng 40 gói` | Nhân hệ số trong ĐVT: 80 |
-| `3T` + ĐVT `túi 2kg` | 3 (2kg là trọng lượng, không phải hệ số) |
+| `10T`, `4T`, `1T`, `12` | Bỏ chữ, giữ nguyên số: 10, 4, 1, 12 |
+| `30cm`, `10 gói`, `30kg`, `18 quả` | Bỏ đơn vị, giữ nguyên số: 30, 10, 30, 18 |
 | `5b x 30kg` | 5 (30kg là trọng lượng nên không nhân) |
-| `80G` + ĐVT `thùng 40 gói` | 80 (phiếu đã ghi đơn vị lẻ, không nhân) |
 | Chỉ `✓` `v` `V` `>` `/` `√` | Số lượng đặt (cột 4 Excel) |
 | Trống / không có STT trên ảnh | Không xuất dòng |
 | `5,5` | 5.5 (giữ số lẻ) |
 
 STT trên phiếu = thứ tự dòng Excel (dòng 2 = STT 1).
 
-Hệ số quy đổi lấy từ cột **Đơn vị tính** của file chi tiết: `thùng 40 gói` → 40,
-`thùng (20 khay)` → 20, `thùng (40)` → 40, `thùng 10kg/11 con` → 11.
-ĐVT chỉ có trọng lượng (`túi 2kg`, `thùng 10kg`, `cái (600-700g)`) thì không quy đổi.
+**Không quy đổi theo ĐVT.** Cột ĐVT đã nói rõ đơn vị (vd `thùng 20 hộp`),
+nên phiếu ghi `10T` nghĩa là 10 thùng → xuất **10**, không phải 200.
+Chỉ nhân khi chính ô viết tay có dấu nhân (`5T x 24` → 120 hộp lẻ).
 Bảng Kết quả có cột **ĐVT** cạnh cột «Đọc từ ảnh» để bạn đối chiếu từng dòng.
 
 ## CLI

@@ -17,8 +17,11 @@ fix_stdio_utf8()
 
 def main() -> int:
   from thuc_xuat.config import ensure_config_file
+  from thuc_xuat.proc import install_no_window_defaults
 
   fix_stdio_utf8()
+  # App GUI: không để bất kỳ tiến trình con nào làm nhấp nháy cửa sổ terminal.
+  install_no_window_defaults()
   ensure_config_file()
 
   if len(sys.argv) > 1 and sys.argv[1] == "cli":

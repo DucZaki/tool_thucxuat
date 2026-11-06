@@ -22,7 +22,7 @@ CÁCH CÀI BẰNG FILE ZIP (nếu không dùng bộ cài)
       ThucXuatTool.exe
       _internal\          ← folder này BẮT BUỘC, không được xóa/bỏ sót
 3. Double-click: ThucXuatTool.exe
-   (hoặc Chay-ThucXuatTool.bat)
+   (hoặc Chay-ThucXuatTool.vbs — mở app không nhấp nháy cửa sổ đen)
 
 SAI → lỗi "Failed to load Python DLL ... _internal\python312.dll":
   - Chỉ copy mỗi file .exe sang Desktop / Zalo → THIẾU _internal
@@ -89,10 +89,11 @@ CÁCH TÍNH SỐ LƯỢNG
 - Ghi X                  -> bỏ dòng
 - Ghi 3T*3               -> 9   (có dấu nhân thì nhân)
 - Ghi 5T x 24            -> 120 (dấu x cũng là nhân)
-- Ghi 10 gói, 30kg       -> 10, 30 (đã ghi đơn vị lẻ thì giữ nguyên)
-- Ghi 2T, ĐVT thùng 40 gói -> 80 (nhân hệ số quy đổi trong ĐVT)
-- Ghi 2T, ĐVT túi 2kg    -> 2 (2kg là trọng lượng, không nhân)
+- Ghi 10T, 4T, 1T        -> 10, 4, 1 (bỏ chữ, giữ nguyên số)
+- Ghi 30cm, 10 gói, 30kg -> 30, 10, 30 (bỏ đơn vị, giữ nguyên số)
 - Chỉ có dấu tick ✓      -> lấy số lượng đặt
+KHÔNG nhân theo ĐVT: ĐVT «thùng 20 hộp» + ghi 10T vẫn là 10 thùng -> xuất 10.
+Chỉ nhân khi ô viết tay có dấu nhân (vd 5T x 24 -> 120).
 Cột ĐVT trong bảng Kết quả giúp bạn đối chiếu trước khi nhập KiotViet.
 
 Lưu ý:

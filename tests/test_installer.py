@@ -125,7 +125,7 @@ class OllamaSetupTests(unittest.TestCase):
     with tempfile.TemporaryDirectory() as tmp:
       setup = Path(tmp) / "OllamaSetup.exe"
       setup.write_bytes(b"stub")
-      with patch.object(ollama_setup.subprocess, "run") as run, patch.object(
+      with patch.object(ollama_setup, "run") as run, patch.object(
         ollama_setup, "find_ollama_exe", return_value=r"C:\Ollama\ollama.exe"
       ):
         exe = ollama_setup.install(setup)

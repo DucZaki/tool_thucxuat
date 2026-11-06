@@ -5,10 +5,12 @@ from __future__ import annotations
 import sys
 import threading
 import tkinter as tk
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
+from thuc_xuat.app_paths import app_dir
 from thuc_xuat.cancel import CancelledByUser
 from thuc_xuat.config import (
   auto_open_output_folder,
@@ -70,6 +72,24 @@ class ThucXuatApp(tk.Tk):
     self._build_ui()
     self.after(400, self._startup_check_ollama)
     self.after(1500, self._check_update_silent)
+
+  def report_callback_exception(self, exc, val, tb) -> None:  # noqa: ANN001
+    """Lỗi trong 1 nút bấm không được làm app chết im lặng (bản .exe không có console)."""
+    detail = "".join(traceback.format_exception(exc, val, tb))
+    log_path = app_dir() / "error.log"
+    try:
+      log_path.write_text(detail, encoding="utf-8")
+    except OSError:
+      log_path = None
+    text = str(val) or exc.__name__
+    message = (
+      f"{text}\n\n"
+      + (f"Chi tiết đã ghi vào:\n{log_path}" if log_path else "Không ghi được log lỗi.")
+    )
+    try:
+      messagebox.showerror("Lỗi ứng dụng", message)
+    except Exception:  # noqa: BLE001 — cửa sổ lỗi không được làm app chết
+      pass
 
   def _build_ui(self) -> None:
     top = ttk.LabelFrame(self, text="1. Chọn file", padding=10)
@@ -313,7 +333,11 @@ class ThucXuatApp(tk.Tk):
 
   def open_output_folder(self) -> None:
     """Mở thư mục chứa file kết quả trong Explorer (tạo nếu chưa có)."""
-    folder = output_dir()
+    try:
+      folder = output_dir()
+    except OSError as exc:
+      messagebox.showerror("Không mở được thư mục", str(exc))
+      return
     reveal_in_folder(folder)
     self.status.config(text=f"Thư mục xuất: {folder}")
 
@@ -720,10 +744,10 @@ class ThucXuatApp(tk.Tk):
       "để xuất bản còn lại mà không phải đọc ảnh lại.\n\n"
       "Quy tắc:\n"
       "• X → bỏ dòng\n"
-      "• Có dấu nhân thì nhân: 3T*3 → 9, 5T x 24 → 120\n"
-      "• Chữ T = «thùng»: 2T + ĐVT «thùng 40 gói» → 80\n"
-      "  (AI hay đọc T thành 7 — app tự sửa khi SL đặt khớp)\n"
-      "• Ghi đơn vị lẻ thì giữ nguyên: 10 gói → 10, 30kg → 30\n"
+      "• Có dấu nhân thì mới nhân: 3T*3 → 9, 5T x 24 → 120\n"
+      "• Không có dấu nhân: giữ nguyên số, bỏ chữ:\n"
+      "    1T → 1, 4T → 4, 12 → 12, 30cm → 30\n"
+      "  (KHÔNG nhân theo hệ số trong ĐVT)\n"
       "• Chỉ tick ✓ → lấy số lượng đặt\n\n"
       "Dòng tô VÀNG = số xuất lớn bất thường so với SL đặt\n"
       "(nghi AI đọc sai) — nháy đúp để sửa tay.\n"
@@ -835,14 +859,19 @@ class ThucXuatApp(tk.Tk):
 
     for result in batch.results:
       self.results_by_excel[result.source_path] = result
-      save_mapping(
-        result.output_path.with_suffix(".json"),
-        result.thuc_xuat_map,
-        meta={"source": str(result.source_path)},
-      )
+      try:
+        save_mapping(
+          result.output_path.with_suffix(".json"),
+          result.thuc_xuat_map,
+          meta={"source": str(result.source_path)},
+        )
+      except OSError:
+        pass  # không lưu được JSON phụ cũng không ảnh hưởng file Excel
 
     self._fill_preview()
-    self.reexport_btn.config(state=tk.NORMAL)
+    self.reexport_btn.config(
+      state=tk.NORMAL if self.results_by_excel else tk.DISABLED
+    )
 
     if batch.ok_count and auto_open_output_folder():
       reveal_outputs([r.output_path for r in batch.results])
@@ -867,7 +896,10 @@ class ThucXuatApp(tk.Tk):
       return
 
     total_rows = sum(len(r.included) for r in batch.results)
-    mode = "Mã + Tên SP + Thực xuất" if include_name else "Mã + Thực xuất"
+    include_name_done = batch.results[0].include_name if batch.results else False
+    mode = (
+      "Mã + Tên SP + Thực xuất" if include_name_done else "Mã + Thực xuất"
+    )
     if len(batch.results) == 1:
       r = batch.results[0]
       self.status.config(text=f"Xong: {len(r.included)} dòng → {r.output_path.name}")
@@ -889,7 +921,7 @@ class ThucXuatApp(tk.Tk):
     messagebox.showinfo(
       "Hoàn tất",
       f"Đã tạo {batch.ok_count} file ({mode}) trong:\n"
-      f"{out_dir}\n\n{lines}\n\nTổng {total_rows} dòng xuất.",
+      f"{batch.results[0].output_path.parent}\n\n{lines}\n\nTổng {total_rows} dòng xuất.",
     )
 
   def _fill_preview(self) -> None:
@@ -902,7 +934,11 @@ class ThucXuatApp(tk.Tk):
 
     result = self.results_by_excel.get(job.excel_path)
     thuc_xuat_map = result.thuc_xuat_map if result else {}
-    products = load_products(job.excel_path) if job.product_count else []
+    try:
+      products = load_products(job.excel_path) if job.product_count else []
+    except Exception as exc:
+      self.status.config(text=f"Không đọc lại được {job.excel_path.name}: {exc}")
+      return
     if not products:
       return
 
@@ -913,7 +949,7 @@ class ThucXuatApp(tk.Tk):
       if qty is None:
         tags.append("skip")
       else:
-        expected = expected_qty(p.ordered_qty, p.unit)
+        expected = expected_qty(p.ordered_qty, raw)
         # Số xuất lớn bất thường so với SL đặt = nghi AI đọc sai (vd "4T" → "47").
         if expected and qty > expected * 5 and qty - expected > 20:
           tags.append("warn")
@@ -959,9 +995,8 @@ class ThucXuatApp(tk.Tk):
       f"STT {stt} — {values[2]}\nĐVT: {values[3]}\n\n"
       "Nhập số (vd 10), X (bỏ dòng), ✓ (lấy số đặt),\n"
       "hoặc nguyên văn trên phiếu:\n"
-      "• 3T*3 → 9, 5T x 24 → 120 (có dấu nhân thì nhân)\n"
-      "• 10 gói → 10 (ghi đơn vị lẻ thì giữ nguyên)\n"
-      "• 2T → 2 × hệ số ĐVT (ĐVT «thùng 40 gói» → 80)\n\n"
+      "• 3T*3 → 9, 5T x 24 → 120 (có dấu nhân thì mới nhân)\n"
+      "• 1T → 1, 30cm → 30 (không có dấu nhân thì giữ nguyên số)\n\n"
       "Để trống = không xuất dòng này.",
       initialvalue=current,
       parent=self,
@@ -970,19 +1005,35 @@ class ThucXuatApp(tk.Tk):
       return
 
     new_value = new_value.strip()
+    previous = result.thuc_xuat_map.get(stt)
     if new_value:
       result.thuc_xuat_map[stt] = new_value
     else:
       result.thuc_xuat_map.pop(stt, None)
 
-    products = load_products(job.excel_path)
-    included, skipped = build_output(products, result.thuc_xuat_map)
-    save_output(included, result.output_path, include_name=result.include_name)
-    save_mapping(
-      result.output_path.with_suffix(".json"),
-      result.thuc_xuat_map,
-      meta={"source": str(job.excel_path), "edited": True},
-    )
+    try:
+      products = load_products(job.excel_path)
+      included, skipped = build_output(products, result.thuc_xuat_map)
+      save_output(included, result.output_path, include_name=result.include_name)
+      save_mapping(
+        result.output_path.with_suffix(".json"),
+        result.thuc_xuat_map,
+        meta={"source": str(job.excel_path), "edited": True},
+      )
+    except Exception as exc:
+      # Hoàn tác để bảng xem trước không lệch với file trên đĩa.
+      if previous is None:
+        result.thuc_xuat_map.pop(stt, None)
+      else:
+        result.thuc_xuat_map[stt] = previous
+      self._fill_preview()
+      messagebox.showerror(
+        "Không lưu được",
+        f"{result.output_path.name} có thể đang mở trong Excel.\n\n"
+        f"Đóng file đó rồi sửa lại.\n\nChi tiết: {exc}",
+      )
+      return
+
     result.included = included
     result.skipped = skipped
     result.extracted_stt = len(result.thuc_xuat_map)

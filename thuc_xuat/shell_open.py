@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 from pathlib import Path
+
+from thuc_xuat.proc import popen
 
 
 def reveal_in_folder(path: str | Path) -> None:
@@ -16,19 +17,23 @@ def reveal_in_folder(path: str | Path) -> None:
   if not target.parent.exists() and not target.is_dir():
     return
 
-  if os.name == "nt":
-    if target.is_file():
-      subprocess.Popen(["explorer", "/select,", str(target)])
-    else:
-      subprocess.Popen(["explorer", str(target)])
-    return
+  try:
+    if os.name == "nt":
+      if target.is_file():
+        popen(["explorer", "/select,", str(target)])
+      else:
+        popen(["explorer", str(target)])
+      return
 
-  if sys.platform == "darwin":
-    subprocess.Popen(["open", "-R", str(target)])
-    return
+    if sys.platform == "darwin":
+      popen(["open", "-R", str(target)])
+      return
 
-  folder = target if target.is_dir() else target.parent
-  subprocess.Popen(["xdg-open", str(folder)])
+    folder = target if target.is_dir() else target.parent
+    popen(["xdg-open", str(folder)])
+  except OSError:
+    # Không mở được Explorer không phải lỗi chặn công việc.
+    pass
 
 
 def reveal_outputs(paths: list[str | Path]) -> None:

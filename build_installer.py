@@ -21,7 +21,12 @@ APP = DIST / "ThucXuatTool"
 BUILD = ROOT / "build"
 PAYLOAD_STAGE = BUILD / "payload_app"
 PAYLOAD_ZIP = BUILD / "payload.zip"
-DOCS = ("HUONG-DAN-NGUOI-DUNG.txt", "Chay-ThucXuatTool.bat", "config.json.example")
+DOCS = (
+    "HUONG-DAN-NGUOI-DUNG.txt",
+    "Chay-ThucXuatTool.vbs",
+    "Chay-ThucXuatTool.bat",
+    "config.json.example",
+)
 SKIP = {"config.json", "KetQua", ".write-test"}
 
 

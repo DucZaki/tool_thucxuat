@@ -78,6 +78,7 @@ jobs:
           Copy-Item config.json.example "$out\config.json.example"
           Copy-Item HUONG-DAN-NGUOI-DUNG.txt "$out\"
           Copy-Item Chay-ThucXuatTool.bat "$out\"
+          Copy-Item Chay-ThucXuatTool.vbs "$out\"
           Compress-Archive -Path $out -DestinationPath "dist\ThucXuatTool-win64.zip" -Force
           Get-Item "dist\ThucXuatTool-win64.zip" | Select-Object Name, Length
 

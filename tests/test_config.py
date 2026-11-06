@@ -50,6 +50,26 @@ class ConfigFileTests(unittest.TestCase):
     self.assertNotIn("provider", data)
     self.assertNotIn("api_key", data)
 
+  def test_broken_json_falls_back_to_defaults(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      path = Path(tmp) / "config.json"
+      path.write_text("{ hong json", encoding="utf-8")
+      with patch.object(config, "CONFIG_FILE", path):
+        settings = config.get_ollama_settings()
+    self.assertEqual(settings["model"], "gemma3:4b")
+    self.assertEqual(settings["num_ctx"], 8192)
+
+  def test_missing_keys_use_defaults(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      path = Path(tmp) / "config.json"
+      path.write_text(json.dumps({"ollama_model": "qwen2.5vl:3b"}), encoding="utf-8")
+      with patch.object(config, "CONFIG_FILE", path):
+        settings = config.get_ollama_settings()
+        include = config.export_include_name()
+    self.assertEqual(settings["model"], "qwen2.5vl:3b")
+    self.assertEqual(settings["base_url"], "http://127.0.0.1:11434")
+    self.assertFalse(include)
+
 
 class OutputFolderTests(unittest.TestCase):
   def test_default_output_dir_is_ketqua_and_created(self):

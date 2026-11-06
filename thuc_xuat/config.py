@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -31,19 +32,35 @@ OUTPUT_DIR_NAME = "KetQua"
 
 
 def load_config() -> dict[str, Any]:
-  if CONFIG_FILE.exists():
-    # utf-8-sig: chấp nhận file có BOM (Notepad/PowerShell hay thêm vào).
-    return json.loads(CONFIG_FILE.read_text(encoding="utf-8-sig"))
-  return dict(DEFAULT_CONFIG)
+  """Đọc config.json; file hỏng/thiếu khoá thì dùng giá trị mặc định."""
+  if not CONFIG_FILE.exists():
+    return dict(DEFAULT_CONFIG)
+  data: Any = None
+  for encoding in ("utf-8-sig", "utf-8"):
+    try:
+      data = json.loads(CONFIG_FILE.read_text(encoding=encoding))
+      break
+    except (OSError, UnicodeDecodeError, ValueError):
+      continue
+  if not isinstance(data, dict):
+    return dict(DEFAULT_CONFIG)
+  cfg = dict(DEFAULT_CONFIG)
+  cfg.update(data)
+  return cfg
 
 
 def ensure_config_file() -> None:
   """Tạo config.json mặc định bên cạnh .exe nếu chưa có."""
-  if not CONFIG_FILE.exists():
+  if CONFIG_FILE.exists():
+    return
+  try:
     CONFIG_FILE.write_text(
       json.dumps(DEFAULT_CONFIG, ensure_ascii=False, indent=2),
       encoding="utf-8",
     )
+  except OSError:
+    # App nằm trong thư mục chỉ đọc (Program Files) — vẫn chạy với mặc định.
+    pass
 
 
 def get_ollama_settings() -> dict[str, Any]:
@@ -84,9 +101,14 @@ def _ensure_dir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path
   except OSError:
-    fallback = Path.home() / "Documents" / "ThucXuat"
-    fallback.mkdir(parents=True, exist_ok=True)
-    return fallback
+    pass
+  for fallback in (Path.home() / "Documents" / "ThucXuat", Path(tempfile.gettempdir()) / "ThucXuat"):
+    try:
+      fallback.mkdir(parents=True, exist_ok=True)
+      return fallback
+    except OSError:
+      continue
+  return path
 
 
 def output_dir() -> Path:

@@ -31,13 +31,6 @@ class OutputRow:
 
 TICK_MARKS = frozenset({"✓", "✔", "v", "V", "Y", "y", ">", "/", "√"})
 
-# Đơn vị lẻ: nếu phiếu ghi kèm đơn vị này thì số đã là số lẻ, không quy đổi.
-_INNER_UNITS = (
-  "gói", "goi", "hộp", "hop", "khay", "con", "chai", "lốc", "loc", "lon",
-  "cái", "cai", "quả", "qua", "túi", "tui", "bịch", "bich", "hũ", "hu",
-  "kg", "gam", "gram", "g", "lít", "lit", "l", "ml",
-)
-
 _COUNT_UNITS = (
   "gói", "goi", "hộp", "hop", "khay", "con", "chai", "lốc", "loc", "lon",
   "cái", "cai", "quả", "qua", "túi", "tui", "bịch", "bich", "hũ", "hu",
@@ -66,6 +59,33 @@ def _to_number(text: str) -> int | float | None:
   except ValueError:
     return None
   return int(value) if value.is_integer() else value
+
+
+_THOUSANDS_RE = re.compile(r"^\d{1,3}(?:[.,]\d{3})+$")
+
+
+def _as_number(value: Any) -> Any:
+  """Ép số lượng về int/float.
+
+  Ô «Số lượng» trong file KiotViet đôi khi ở định dạng text ("12", "12 ",
+  "1.000") — nếu để nguyên, dòng chỉ tick sẽ ghi ra Excel dạng chữ.
+  """
+  if value is None or isinstance(value, bool):
+    return value
+  if isinstance(value, (int, float)):
+    return value
+  text = str(value).strip()
+  if not text:
+    return None
+  if _THOUSANDS_RE.fullmatch(text.replace(" ", "")):
+    # "1.000" / "1,000" = một nghìn (dấu phân cách hàng nghìn, không phải số lẻ).
+    return int(re.sub(r"[.,]", "", text.replace(" ", "")))
+  text = text.replace(" ", "").replace(",", ".")
+  try:
+    number = float(text)
+  except ValueError:
+    return value
+  return int(number) if number.is_integer() else number
 
 
 def pack_factor(unit: Any) -> int | float | None:
@@ -124,12 +144,6 @@ def _prefer_ordered(whole: int, lead: int, ordered_qty: Any, prefer_lead: bool) 
   return lead if prefer_lead and lead > 0 else whole
 
 
-def _written_unit(text: str) -> str:
-  """Đơn vị viết tay ngay sau con số: '3T x 6' -> 't', '10 gói' -> 'gói'."""
-  m = re.match(r"^\s*\d+(?:[.,]\d+)?\s*([A-Za-zÀ-ỹĐđ]+)", text)
-  return m.group(1).lower() if m else ""
-
-
 def _explicit_factors(text: str) -> list[float]:
   """Các thừa số sau dấu nhân: '5T x 24' -> [24], '3T*3' -> [3].
 
@@ -159,9 +173,8 @@ def parse_qty(
   - X / trống -> None (bỏ dòng)
   - Chỉ tick (✓ v V Y > / √) -> lấy số lượng đặt
   - Có dấu nhân -> nhân: '3T*3' -> 9, '5T x 24' -> 120
-  - Không có dấu nhân, phiếu ghi đơn vị lẻ ('10 gói', '30kg') -> giữ nguyên
-  - Không có dấu nhân, phiếu ghi đơn vị ngoài ('2T') -> nhân hệ số ĐVT:
-    'thùng 40 gói' + '2T' -> 80; 'túi 2kg' + '3T' -> 3 (2kg là trọng lượng)
+  - Không có dấu nhân -> giữ nguyên số, KHÔNG quy đổi theo ĐVT:
+    '10 gói' -> 10, '30kg' -> 30, '30cm' -> 30, '1T' -> 1, '12' -> 12
   - Số lẻ giữ nguyên: '5,5' -> 5.5
   """
   if raw is None:
@@ -170,9 +183,8 @@ def parse_qty(
   if not s or s.upper() == "X":
     return None
   if s in TICK_MARKS:
-    if ordered_qty is not None:
-      return ordered_qty
-    return None
+    value = _as_number(ordered_qty)
+    return value if isinstance(value, (int, float)) else None
 
   base: int | float | None = None
   factors: list[float] = []
@@ -200,32 +212,34 @@ def parse_qty(
   if base is None:
     return None
 
-  value = float(base)
   if factors:
+    value = float(base)
     for f in factors:
       value *= f
     return _to_number(str(value))
-
-  written = _written_unit(s)
-  if written.startswith(_INNER_UNITS):
-    return base
-
-  factor = pack_factor(unit)
-  if factor:
-    return _to_number(str(value * float(factor)))
+  # Không có dấu nhân: chỉ lấy đúng con số trên phiếu.
   return base
 
 
+def explicit_multiplier(raw: Any) -> float:
+  """Tích các thừa số sau dấu nhân: '5T x 24' -> 24, '12' -> 1."""
+  if raw is None:
+    return 1.0
+  product = 1.0
+  for factor in _explicit_factors(str(raw)):
+    product *= factor
+  return product
 
-def expected_qty(ordered_qty: Any, unit: Any = None) -> float | None:
-  """SL đặt quy về đơn vị lẻ (để phát hiện dòng bị đọc sai số)."""
+
+def expected_qty(ordered_qty: Any, raw: Any = None) -> float | None:
+  """SL đặt × thừa số ghi trên phiếu — mốc để phát hiện dòng bị đọc sai số."""
   try:
     ordered = float(ordered_qty)
   except (TypeError, ValueError):
     return None
   if ordered <= 0:
     return None
-  return ordered * float(pack_factor(unit) or 1)
+  return ordered * explicit_multiplier(raw)
 
 
 def load_products(source_path: str | Path) -> list[Product]:
@@ -238,10 +252,13 @@ def load_products(source_path: str | Path) -> list[Product]:
       continue
     name = _clean_text(ws.cell(r, 2).value)
     unit = _clean_text(ws.cell(r, 3).value)
-    ordered = ws.cell(r, 4).value
+    ordered = _as_number(ws.cell(r, 4).value)
     products.append(
       Product(
-        stt=len(products) + 1,
+        # STT trên phiếu = số thứ tự dòng của bảng Excel (dòng 2 → STT 1).
+        # Dùng số dòng thật để nếu file có dòng trống xen giữa thì các STT
+        # phía sau vẫn khớp với phiếu giấy.
+        stt=r - 1,
         code=code,
         name=name,
         ordered_qty=ordered,

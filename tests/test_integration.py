@@ -67,9 +67,11 @@ class ParseQtyRulesTests(unittest.TestCase):
       with self.subTest(raw=raw):
         self.assertEqual(parse_qty(raw), expected)
 
-  def test_unit_factor_from_detail_file(self):
-    self.assertEqual(parse_qty("2T", 7, "thùng 40 gói"), 80)
-    self.assertEqual(parse_qty("3T", 5, "túi 2kg"), 3)
+  def test_no_unit_conversion(self):
+    self.assertEqual(parse_qty("2T", 7, "thùng 40 gói"), 2)
+    self.assertEqual(parse_qty("1T", 1, "thùng 6 hộp"), 1)
+    self.assertEqual(parse_qty("12", 12, "thùng 20 hộp"), 12)
+    self.assertEqual(parse_qty("30cm", 3, "thùng 10 con"), 30)
     self.assertEqual(parse_qty("24 gói", 7, "thùng 40 gói"), 24)
 
   def test_tick_marks_use_ordered_qty(self):

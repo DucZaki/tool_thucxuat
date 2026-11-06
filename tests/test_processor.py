@@ -50,21 +50,17 @@ class ParseQtyTests(unittest.TestCase):
       with self.subTest(raw=raw):
         self.assertEqual(parse_qty(raw), expected)
 
-  def test_unit_factor_from_detail_file(self):
-    # ĐVT có số quy đổi -> nhân khi phiếu ghi đơn vị ngoài
-    self.assertEqual(parse_qty("2T", 7, "thùng 40 gói"), 80)
-    self.assertEqual(parse_qty("2T", 7, "thùng (20 khay)"), 40)
-    self.assertEqual(parse_qty("2T", 7, "thùng (40)"), 80)
-    self.assertEqual(parse_qty("3T", 5, "thùng 10kg/11 con"), 33)
-    # Đơn vị lẻ ghi rõ trên phiếu -> giữ nguyên, không nhân
+  def test_no_conversion_from_detail_unit(self):
+    # Không có dấu nhân -> giữ nguyên số, bỏ chữ (không nhân hệ số ĐVT)
+    self.assertEqual(parse_qty("2T", 7, "thùng 40 gói"), 2)
+    self.assertEqual(parse_qty("1T", 1, "thùng 6 hộp"), 1)
+    self.assertEqual(parse_qty("12", 12, "thùng 20 hộp"), 12)
+    self.assertEqual(parse_qty("4T", 4, "thùng 11 hộp"), 4)
+    self.assertEqual(parse_qty("10T", 10, "thùng 20 hộp"), 10)
+    self.assertEqual(parse_qty("30cm", 3, "thùng 10 con"), 30)
     self.assertEqual(parse_qty("80G", 7, "thùng 40 gói"), 80)
     self.assertEqual(parse_qty("24 gói", 7, "thùng 40 gói"), 24)
-    # Trọng lượng trong ĐVT không phải hệ số
-    self.assertEqual(parse_qty("3T", 5, "túi 2kg"), 3)
-    self.assertEqual(parse_qty("3T", 5, "thùng 10kg"), 3)
-    self.assertEqual(parse_qty("3T", 5, "cái (600-700g)"), 3)
-    self.assertEqual(parse_qty("3T", 5, "kg"), 3)
-    # Có dấu nhân thì dấu nhân thắng ĐVT
+    # Có dấu nhân thì mới nhân
     self.assertEqual(parse_qty("2T*3", 7, "thùng 40 gói"), 6)
 
   def test_pack_factor_values(self):
@@ -91,9 +87,9 @@ class ParseQtyTests(unittest.TestCase):
 
   def test_t_read_as_7_repaired_with_ordered_qty(self):
     # AI đọc chữ T (thùng) thành 7: "47" khi SL đặt 4 → 4T
-    self.assertEqual(parse_qty("47", 4, "thùng 50 gói"), 200)
+    self.assertEqual(parse_qty("47", 4, "thùng 50 gói"), 4)
     self.assertEqual(parse_qty("57", 5, "thùng"), 5)
-    self.assertEqual(parse_qty("17", 1, "thùng 12 lốc"), 12)
+    self.assertEqual(parse_qty("17", 1, "thùng 12 lốc"), 1)
     # "21x24" của phiếu đặt 2 thùng = 2T x 24
     self.assertEqual(parse_qty("21x24", 2, "thùng (24 hộp)"), 48)
     self.assertEqual(parse_qty("17x24", 1, "thùng (24 hộp)"), 24)
@@ -101,13 +97,14 @@ class ParseQtyTests(unittest.TestCase):
     # Số đọc đúng thì không sửa: đặt 50 thùng, phiếu ghi 57
     self.assertEqual(parse_qty("57", 50, "thùng"), 57)
     # Không có SL đặt thì giữ nguyên
-    self.assertEqual(parse_qty("47", None, "thùng 50 gói"), 2350)
+    self.assertEqual(parse_qty("47", None, "thùng 50 gói"), 47)
 
   def test_expected_qty(self):
-    self.assertEqual(expected_qty(7, "thùng 12 lốc"), 84)
-    self.assertEqual(expected_qty(5, "gói"), 5)
-    self.assertIsNone(expected_qty(None, "gói"))
-    self.assertIsNone(expected_qty(0, "gói"))
+    self.assertEqual(expected_qty(12, "12"), 12)
+    self.assertEqual(expected_qty(5, "5T x 24"), 120)
+    self.assertEqual(expected_qty(2, "21x24"), 48)
+    self.assertIsNone(expected_qty(None))
+    self.assertIsNone(expected_qty(0))
 
 
 class LoadProductsTests(unittest.TestCase):
@@ -128,7 +125,30 @@ class LoadProductsTests(unittest.TestCase):
       wb.save(p)
       products = load_products(p)
     self.assertEqual([x.code for x in products], ["SP1"])
-    self.assertEqual(products[0].stt, 1)
+    # STT = số dòng trên phiếu (dòng Excel 4 → STT 3), không dồn lại.
+    self.assertEqual(products[0].stt, 3)
+
+  def test_text_quantity_is_coerced(self):
+    import tempfile
+    from pathlib import Path
+
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["Mã hàng", "Tên hàng", "ĐVT", "Số lượng"])
+    ws.append(["SP1", "hàng 1", "thùng", "12"])       # định dạng text
+    ws.append(["SP2", "hàng 2", "thùng", "1.000"])    # phân cách hàng nghìn
+    ws.append(["SP3", "hàng 3", "kg", "5,5"])
+    with tempfile.TemporaryDirectory() as d:
+      p = Path(d) / "t.xlsx"
+      wb.save(p)
+      products = load_products(p)
+    self.assertEqual(products[0].ordered_qty, 12)
+    self.assertEqual(products[1].ordered_qty, 1000)
+    self.assertEqual(products[2].ordered_qty, 5.5)
+    # Dòng chỉ tick phải ra số (ghi Excel là số, không phải chữ)
+    self.assertEqual(parse_qty("✓", products[0].ordered_qty), 12)
 
 
 class BuildOutputTests(unittest.TestCase):

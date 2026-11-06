@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 import sys
 import tempfile
 import threading
@@ -27,6 +26,7 @@ from thuc_xuat import ollama_setup
 from thuc_xuat.cancel import CancelledByUser
 from thuc_xuat.config import OLLAMA_DEFAULT_MODEL
 from thuc_xuat.ollama_client import ensure_server, find_ollama_exe, has_model, pull_model
+from thuc_xuat.proc import install_no_window_defaults, popen, run
 from thuc_xuat.version import __version__
 
 APP_NAME = "ThucXuatTool"
@@ -138,24 +138,20 @@ def create_shortcut(link: Path, target: Path) -> None:
       "$sc.Save()",
     ]
   )
-  subprocess.run(
+  run(
     ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
     check=True,
-    capture_output=True,
     timeout=60,
-    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
   )
 
 
 def app_running() -> bool:
   try:
-    out = subprocess.run(
+    out = run(
       ["tasklist", "/FI", f"IMAGENAME eq {EXE_NAME}", "/FO", "CSV", "/NH"],
-      capture_output=True,
-      text=True,
       timeout=30,
+      text=True,
       errors="ignore",
-      creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
   except OSError:
     return False
@@ -163,12 +159,7 @@ def app_running() -> bool:
 
 
 def close_running_app() -> None:
-  subprocess.run(
-    ["taskkill", "/IM", EXE_NAME, "/F"],
-    capture_output=True,
-    timeout=60,
-    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-  )
+  run(["taskkill", "/IM", EXE_NAME, "/F"], timeout=60)
 
 
 # ---------------------------------------------------------------- giao diện
@@ -415,7 +406,7 @@ class SetupWindow(tk.Tk):
       self.destroy()
       return
     try:
-      subprocess.Popen([str(exe)], cwd=str(exe.parent))
+      popen([str(exe)], cwd=str(exe.parent))
     except OSError as exc:
       messagebox.showerror("Không mở được ứng dụng", str(exc))
       return
@@ -437,6 +428,7 @@ class SetupWindow(tk.Tk):
 
 
 def main() -> int:
+  install_no_window_defaults()
   try:
     from ctypes import windll
 

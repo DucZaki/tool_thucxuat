@@ -10,7 +10,6 @@ import hashlib
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 import zipfile
 from collections.abc import Callable
@@ -22,6 +21,7 @@ import requests
 
 from thuc_xuat.app_paths import app_dir
 from thuc_xuat.cancel import CancelledByUser
+from thuc_xuat.proc import popen
 from thuc_xuat.version import __version__
 
 GITHUB_REPO = "DucZaki/tool_thucxuat"
@@ -178,7 +178,7 @@ def launch_updater(staged_dir: str | Path) -> Path:
     log = folder / "update-error.log"
 
     script.write_text(
-        "\n".join(
+        "\ufeff" + "\n".join(
             [
                 "$ErrorActionPreference = 'SilentlyContinue'",
                 f"$appPid = {os.getpid()}",
@@ -198,8 +198,8 @@ def launch_updater(staged_dir: str | Path) -> Path:
         encoding="utf-8",
     )
 
-    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    subprocess.Popen(
+    # detached=True: script phải sống tiếp sau khi app đóng để chép đè bản mới.
+    popen(
         [
             "powershell",
             "-NoProfile",
@@ -210,6 +210,6 @@ def launch_updater(staged_dir: str | Path) -> Path:
             "-File",
             str(script),
         ],
-        creationflags=flags,
+        detached=True,
     )
     return script

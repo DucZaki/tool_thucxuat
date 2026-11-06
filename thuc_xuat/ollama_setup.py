@@ -6,7 +6,6 @@ Cài theo từng người dùng (LOCALAPPDATA), thường không cần quyền a
 """
 from __future__ import annotations
 
-import subprocess
 import tempfile
 import time
 from collections.abc import Callable
@@ -17,6 +16,7 @@ import requests
 
 from thuc_xuat.cancel import CancelledByUser
 from thuc_xuat.ollama_client import find_ollama_exe
+from thuc_xuat.proc import run
 
 OLLAMA_SETUP_URL = "https://ollama.com/download/OllamaSetup.exe"
 CHUNK_SIZE = 512 * 1024
@@ -59,11 +59,11 @@ def install(setup_path: str | Path, *, timeout: float = 1800.0) -> str:
     setup_path = Path(setup_path)
     if not setup_path.exists():
         raise FileNotFoundError(f"Không thấy bộ cài Ollama: {setup_path}")
-    subprocess.run(
+    run(
         [str(setup_path), "/VERYSILENT", "/NORESTART", "/SP-"],
         timeout=timeout,
         check=False,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        capture_output=False,
     )
     deadline = time.monotonic() + 180.0
     while time.monotonic() < deadline:

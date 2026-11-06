@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from thuc_xuat.cancel import check_cancel
+from thuc_xuat.cancel import CancelledByUser, check_cancel
 from thuc_xuat.image_match import pdn_from_excel
 from thuc_xuat.ollama_client import ensure_ready
 from thuc_xuat.processor import (
@@ -128,6 +128,8 @@ def process_batch_like_chat(
           include_name=include_name,
         )
       )
+    except CancelledByUser:
+      raise
     except Exception as exc:
       batch.errors.append((src, str(exc)))
   return batch
