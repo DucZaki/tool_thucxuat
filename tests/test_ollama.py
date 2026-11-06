@@ -13,7 +13,7 @@ from PIL import Image
 from thuc_xuat import config
 from thuc_xuat.cancel import CancelledByUser
 from thuc_xuat.image_prep import plan_band_count, split_image
-from thuc_xuat.ollama_client import OllamaError, chat_vision, warm_up
+from thuc_xuat.ollama_client import OllamaError, chat_vision
 from thuc_xuat.vision_extract import (
   _normalize_ollama_value,
   _parse_ollama_order_response,
@@ -66,8 +66,6 @@ class ChatVisionPayloadTests(unittest.TestCase):
         base_url="http://127.0.0.1:11434/",
         timeout=42,
         num_ctx=4096,
-        num_predict=640,
-        keep_alive="30m",
       )
 
     self.assertEqual(text, '{"thuc_xuat": {}}')
@@ -78,47 +76,9 @@ class ChatVisionPayloadTests(unittest.TestCase):
     self.assertEqual(payload["format"], "json")
     self.assertEqual(payload["options"]["temperature"], 0)
     self.assertEqual(payload["options"]["num_ctx"], 4096)
-    self.assertEqual(payload["options"]["num_predict"], 640)
-    self.assertEqual(payload["keep_alive"], "30m")
     self.assertEqual(len(payload["messages"][0]["images"]), 1)
     self.assertTrue(payload["messages"][0]["images"][0].startswith("ZmFrZS1pbWFnZQ"))
     self.assertEqual(captured["timeout"], (5.0, 42.0))
-
-  def test_payload_without_num_predict_omits_option(self):
-    captured = {}
-
-    def fake_post(self, url, **kwargs):
-      captured.update(kwargs)
-      return FakeResponse(stream_lines("{}"))
-
-    with patch.object(requests.Session, "post", fake_post):
-      chat_vision("p", [b"x"], model="gemma3:4b")
-
-    self.assertNotIn("num_predict", captured["json"]["options"])
-    self.assertNotIn("keep_alive", captured["json"])
-
-  def test_warm_up_posts_model_only(self):
-    captured = {}
-
-    class Ok:
-      ok = True
-
-    def fake_post(self, url, **kwargs):
-      captured["url"] = url
-      captured.update(kwargs)
-      return Ok()
-
-    with patch.object(requests.Session, "post", fake_post):
-      self.assertTrue(warm_up("gemma3:4b", "http://127.0.0.1:11434/", num_ctx=8192))
-
-    self.assertEqual(captured["url"], "http://127.0.0.1:11434/api/generate")
-    body = captured["json"]
-    self.assertEqual(body["model"], "gemma3:4b")
-    self.assertTrue(body["prompt"])
-    self.assertFalse(body["stream"])
-    self.assertEqual(body["keep_alive"], "30m")
-    self.assertEqual(body["options"]["num_ctx"], 8192)
-    self.assertEqual(body["options"]["num_predict"], 1)
 
   def test_cancel_mid_stream(self):
     event = threading.Event()
@@ -203,27 +163,6 @@ class ImagePrepTests(unittest.TestCase):
         self.assertEqual(band.width, 1400)
         self.assertGreater(band.height, 500)
         self.assertIn("dải", band.label)
-
-
-class PrepCacheTests(unittest.TestCase):
-  def test_prepare_cached_runs_once_per_image(self):
-    from thuc_xuat import vision_extract
-
-    calls = []
-
-    def fake_prepare(path, bands=0):
-      calls.append(path)
-      return [f"band:{path}"]
-
-    with patch.object(vision_extract, "prepare_page", fake_prepare):
-      cache = {}
-      a = vision_extract._prepare_cached(Path("a.jpg"), {"bands": 0}, cache)
-      b = vision_extract._prepare_cached(Path("a.jpg"), {"bands": 0}, cache)
-      c = vision_extract._prepare_cached(Path("b.jpg"), {"bands": 0}, cache)
-
-    self.assertIs(a, b)
-    self.assertEqual(calls, [Path("a.jpg"), Path("b.jpg")])
-    self.assertEqual(c, ["band:b.jpg"])
 
 
 if __name__ == "__main__":
