@@ -11,7 +11,7 @@ from pathlib import Path
 from thuc_xuat.cancel import CancelledByUser, check_cancel
 from thuc_xuat.config import get_ollama_settings
 from thuc_xuat.image_prep import prepare_page
-from thuc_xuat.ollama_client import OllamaError, chat_vision
+from thuc_xuat.ollama_client import OllamaError, chat_vision, warm_up
 
 # Retry khi 1 ảnh trả về 0 STT (AI bỏ qua trang)
 EMPTY_CHUNK_RETRIES = 3
@@ -209,6 +209,19 @@ def _merge_thuc_maps_weighted(maps: list[dict[int, str]]) -> dict[int, str]:
   return {stt: val for stt, (_, val) in best.items()}
 
 
+def _prepare_cached(
+  img: Path, cfg: dict, cache: dict[str, list] | None
+) -> list:
+  """prepare_page có cache: bước chia phiếu và bước đọc dùng lại ảnh đã xử lý."""
+  key = str(img)
+  if cache is not None and key in cache:
+    return cache[key]
+  bands = prepare_page(img, cfg["bands"])
+  if cache is not None:
+    cache[key] = bands
+  return bands
+
+
 def _ollama_band_map(
   prompt: str,
   band,
@@ -218,6 +231,7 @@ def _ollama_band_map(
   label: str,
   cancel_event: threading.Event | None,
   min_keys: int = 1,
+  num_predict: int | None = None,
 ) -> dict[int, str]:
   """Đọc 1 dải ảnh → map STT. Retry khi JSON hỏng hoặc đọc được quá ít dòng."""
   import time
@@ -239,6 +253,8 @@ def _ollama_band_map(
         base_url=cfg["base_url"],
         timeout=cfg["timeout"],
         num_ctx=cfg["num_ctx"],
+        num_predict=num_predict,
+        keep_alive="30m",
         cancel_event=cancel_event,
       )
       part = _parse_ollama_response(text, max_stt)
@@ -301,6 +317,7 @@ def _assign_pages_to_orders(
   cfg: dict,
   prog: Callable[[str], None],
   cancel_event: threading.Event | None,
+  prep_cache: dict[str, list] | None = None,
 ) -> dict[str, list[Path]]:
   """Chia ảnh về từng phiếu bằng 3 tên hàng đầu trang (so với danh sách SP).
 
@@ -327,7 +344,7 @@ def _assign_pages_to_orders(
     check_cancel(cancel_event)
     prog(f"Đang nhận diện ảnh {i}/{len(images)}: {img.name}...")
     try:
-      band = prepare_page(img, cfg["bands"])[0]
+      band = _prepare_cached(img, cfg, prep_cache)[0]
     except Exception as exc:  # ảnh hỏng → bỏ qua, các ảnh khác vẫn chạy
       prog(f"Cảnh báo: bỏ ảnh {img.name} — không đọc được file ảnh ({exc})")
       continue
@@ -339,6 +356,8 @@ def _assign_pages_to_orders(
         base_url=cfg["base_url"],
         timeout=cfg["timeout"],
         num_ctx=cfg["num_ctx"],
+        num_predict=128,
+        keep_alive="30m",
         cancel_event=cancel_event,
       )
       data = json.loads(_json_slice(text))
@@ -413,6 +432,7 @@ def _extract_one_ollama(
   prog: Callable[[str], None],
   on_progress: Callable[[str], None] | None,
   cancel_event: threading.Event | None,
+  prep_cache: dict[str, list] | None = None,
 ) -> dict[int, str]:
   """Đọc 1 phiếu từ các ảnh đã biết thuộc phiếu đó."""
   from types import SimpleNamespace
@@ -423,13 +443,15 @@ def _extract_one_ollama(
   pdn = (pdn_from_excel(excel) or excel.stem).upper()
   _products = load_products(excel)
   max_stt = max((p.stt for p in _products), default=0)
+  # Chặn model sinh lan man: JSON mỗi dòng ~5–6 token, 10 token/dòng là rộng rãi.
+  num_predict = max(512, min(int(cfg["num_ctx"]) - 256, max_stt * 10 + 256))
   collected: list[dict[int, str]] = []
   empty_images = 0
   skipped_images = 0
   for i, img in enumerate(images, 1):
     check_cancel(cancel_event)
     try:
-      bands = prepare_page(img, cfg["bands"])
+      bands = _prepare_cached(img, cfg, prep_cache)
     except Exception as exc:  # ảnh hỏng/định dạng lạ → bỏ ảnh, không bỏ cả phiếu
       empty_images += 1
       prog(f"Cảnh báo: bỏ ảnh {img.name} — không đọc được file ảnh ({exc})")
@@ -449,6 +471,7 @@ def _extract_one_ollama(
         label,
         cancel_event,
         min_keys=5 if band.mode in ("page", "table") else 1,
+        num_predict=num_predict,
       )
       # Cả trang mà vẫn đọc được < 5 dòng → model bị "ngợp" ảnh dài.
       # Đọc lại bằng 2 nửa trang chồng lấn rồi gộp.
@@ -464,6 +487,7 @@ def _extract_one_ollama(
             f"{label} — nửa {j}",
             cancel_event,
             min_keys=3,
+            num_predict=num_predict,
           )
           if sub:
             sub_maps.append(sub)
@@ -518,6 +542,18 @@ def _extract_orders_ollama(
 
   cfg = get_ollama_settings()
   ordered = _sort_images(image_paths)
+  # Nạp model song song với lúc chuẩn bị ảnh → ảnh đầu không phải chờ load model.
+  threading.Thread(
+    target=warm_up,
+    kwargs={
+      "model": cfg["model"],
+      "base_url": cfg["base_url"],
+      "num_ctx": cfg["num_ctx"],
+    },
+    daemon=True,
+  ).start()
+  # Ảnh đã làm phẳng/che cột dùng lại ở bước đọc (khỏi xử lý cv2 2 lần).
+  prep_cache: dict[str, list] = {}
   prog(
     f"Ollama {cfg['model']}: {len(ordered)} ảnh, {len(excel_paths)} phiếu "
     f"(làm phẳng trang + che cột số lượng in)..."
@@ -526,13 +562,13 @@ def _extract_orders_ollama(
   if len(excel_paths) == 1:
     pdn = (pdn_from_excel(excel_paths[0]) or excel_paths[0].stem).upper()
     merged = _extract_one_ollama(
-      excel_paths[0], ordered, cfg, prog, on_progress, cancel_event
+      excel_paths[0], ordered, cfg, prog, on_progress, cancel_event, prep_cache
     )
     return {pdn: merged}
 
   # Nhiều phiếu: chia ảnh theo tên hàng đầu trang, rồi đọc từng phiếu riêng.
   assignments = _assign_pages_to_orders(
-    ordered, excel_paths, cfg, prog, cancel_event
+    ordered, excel_paths, cfg, prog, cancel_event, prep_cache
   )
   if not assignments:
     raise ValueError(
@@ -548,7 +584,7 @@ def _extract_orders_ollama(
       prog(f"Cảnh báo: không có ảnh nào khớp {pdn}")
       continue
     result[pdn] = _extract_one_ollama(
-      excel, images, cfg, prog, on_progress, cancel_event
+      excel, images, cfg, prog, on_progress, cancel_event, prep_cache
     )
 
   missing = [pdn for pdn in assignments if pdn not in result]

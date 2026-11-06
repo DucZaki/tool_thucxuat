@@ -230,6 +230,43 @@ def ensure_ready(
   return {"server": server, "model": mdl, "pulled": True}
 
 
+def warm_up(
+  model: str | None = None,
+  base_url: str | None = None,
+  *,
+  num_ctx: int | None = None,
+  keep_alive: str = "30m",
+  timeout: float = 120.0,
+) -> bool:
+  """Nạp sẵn model vào RAM/VRAM (giấu 5–15s load ở ảnh đầu tiên).
+
+  Phải kèm 1 prompt ngắn: request rỗng chỉ load rồi đẩy model ra ngay.
+  num_ctx phải trùng lúc đọc ảnh, không thì Ollama nạp lại lần nữa.
+  Lỗi thì bỏ qua — lần gọi thật sẽ báo lỗi rõ ràng cho người dùng.
+  """
+  cfg = get_ollama_settings()
+  base = (base_url or cfg["base_url"]).rstrip("/")
+  mdl = model or cfg["model"]
+  options: dict[str, Any] = {"temperature": 0, "num_predict": 1}
+  if num_ctx:
+    options["num_ctx"] = int(num_ctx)
+  try:
+    resp = _session().post(
+      f"{base}/api/generate",
+      json={
+        "model": mdl,
+        "prompt": "ok",
+        "stream": False,
+        "keep_alive": keep_alive,
+        "options": options,
+      },
+      timeout=(CONNECT_TIMEOUT, timeout),
+    )
+    return resp.ok
+  except requests.exceptions.RequestException:
+    return False
+
+
 def _offline_message(base: str) -> str:
   host = urlparse(base).hostname or base
   return (
@@ -262,6 +299,8 @@ def chat_vision(
   base_url: str | None = None,
   timeout: float | None = None,
   num_ctx: int | None = None,
+  num_predict: int | None = None,
+  keep_alive: Any = None,
   cancel_event: threading.Event | None = None,
 ) -> str:
   """Gửi prompt + 1 (hoặc vài) ảnh, trả về text model sinh ra.
@@ -276,6 +315,10 @@ def chat_vision(
   ctx = int(num_ctx or cfg["num_ctx"])
 
   check_cancel(cancel_event)
+  options: dict[str, Any] = {"temperature": 0, "num_ctx": ctx}
+  if num_predict:
+    # Chặn model "lan man" — JSON 1 phiếu chỉ cần vài trăm token.
+    options["num_predict"] = int(num_predict)
   payload: dict[str, Any] = {
     "model": mdl,
     "messages": [
@@ -287,8 +330,10 @@ def chat_vision(
     ],
     "stream": True,
     "format": "json",
-    "options": {"temperature": 0, "num_ctx": ctx},
+    "options": options,
   }
+  if keep_alive is not None:
+    payload["keep_alive"] = keep_alive
 
   parts: list[str] = []
   try:
