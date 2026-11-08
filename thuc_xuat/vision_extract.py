@@ -32,7 +32,9 @@ Cột Số lượng in đã bị CHE TRẮNG trên ảnh — chỉ đọc cột 
 - Giữ số lẻ và đơn vị viết tay: "5,5", "14 con", "1T", "10H", "5T x 24".
 - Chữ T viết tay (viết tắt của «thùng») trông RẤT GIỐNG số 7. Phải ghi là T: "1T", "4T", "10T" — TUYỆT ĐỐI không ghi thành 17, 47, 107.
 - Không tự nhân/quy đổi, chỉ chép đúng ô viết tay.
-- Ô trống hoặc không đọc được → bỏ STT đó, KHÔNG bịa.
+- Ô có chữ số (kể cả mờ/khó đọc) → PHẢI ghi chữ số đó, không được bỏ. Chỉ bỏ khi ô THỰC SỰ trống.
+- Ưu tiên đọc số hơn là bỏ: nếu nghi ngờ, ghi số đọc được. KHÔNG bịa số không thấy.
+- Ô trống thực sự → bỏ STT đó.
 - Chỉ dùng STT từ 1 đến {max_stt}.{stt_hint}
 
 Trả JSON thuần (không markdown):

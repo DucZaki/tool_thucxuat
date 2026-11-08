@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """Client Ollama local — đọc ảnh bằng model vision (mặc định gemma3:4b).
 
 Không cần Internet, không cần API key. Chỉ cần Ollama đang chạy
@@ -25,6 +25,10 @@ from thuc_xuat.proc import popen
 
 CONNECT_TIMEOUT = 5.0
 SERVER_WAIT_SECONDS = 40.0
+
+# Tiến trình `ollama serve` do chính app bật (để tắt khi app đóng).
+_server_proc = None
+_started_by_app = False
 
 
 class OllamaError(RuntimeError):
@@ -80,8 +84,9 @@ def find_ollama_exe() -> str | None:
 
 
 def _spawn_server(exe: str) -> None:
-  """Chạy `ollama serve` ẩn, tách khỏi app (app tắt vẫn còn chạy cho lần sau)."""
-  popen(
+  """Chạy `ollama serve` ẩn; lưu tiến trình để tắt khi app đóng."""
+  global _server_proc
+  _server_proc = popen(
     [exe, "serve"],
     detached=True,
     stdin=subprocess.DEVNULL,
@@ -106,8 +111,11 @@ def ensure_server(
     if on_status is not None:
       on_status(msg)
 
+  global _started_by_app
   try:
     list_models(base_url, timeout=2.0)
+    # Đã chạy sẵn (user/bản khác bật) → không tắt khi app đóng.
+    _started_by_app = False
     return "running"
   except OllamaError:
     pass
@@ -137,6 +145,7 @@ def ensure_server(
     time.sleep(0.7)
     try:
       list_models(base_url, timeout=2.0)
+      _started_by_app = True
       return "started"
     except OllamaError:
       continue
@@ -144,6 +153,55 @@ def ensure_server(
     f"Đã chạy «{exe} serve» nhưng sau {int(wait_seconds)}s vẫn không kết nối được {base}.\n\n"
     "Thử mở app Ollama bằng tay rồi bấm lại."
   )
+
+
+def started_by_app() -> bool:
+  """App có tự bật Ollama trong phiên này không (để quyết định có tắt khi đóng)."""
+  return bool(_started_by_app)
+
+
+def stop_server() -> None:
+  """Tắt `ollama serve` nếu chính app đã bật nó (model chỉ chạy khi app chạy)."""
+  global _server_proc, _started_by_app
+  proc = _server_proc
+  _server_proc = None
+  _started_by_app = False
+  if proc is None:
+    return
+  try:
+    proc.terminate()
+    try:
+      proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+      proc.kill()
+  except Exception:
+    pass
+
+
+def remove_ollama_from_startup() -> bool:
+  """Xóa shortcut Ollama khỏi thư mục Startup của Windows.
+
+  Để Ollama KHÔNG tự chạy cùng Windows — chỉ chạy khi app bật.
+  Trả về True nếu có xóa.
+  """
+  removed = False
+  dirs = []
+  appdata = os.environ.get("APPDATA")
+  if appdata:
+    dirs.append(Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup")
+  programdata = os.environ.get("PROGRAMDATA")
+  if programdata:
+    dirs.append(Path(programdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "StartUp")
+  for d in dirs:
+    for name in ("Ollama.lnk", "Ollama (system).lnk", "Ollama.lnk"):
+      p = d / name
+      if p.is_file():
+        try:
+          p.unlink()
+          removed = True
+        except OSError:
+          pass
+  return removed
 
 
 def has_model(model: str, base_url: str | None = None) -> bool:

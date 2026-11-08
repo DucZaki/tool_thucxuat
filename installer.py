@@ -25,7 +25,7 @@ from tkinter import messagebox, ttk
 from thuc_xuat import ollama_setup
 from thuc_xuat.cancel import CancelledByUser
 from thuc_xuat.config import OLLAMA_DEFAULT_MODEL
-from thuc_xuat.ollama_client import ensure_server, find_ollama_exe, has_model, pull_model
+from thuc_xuat.ollama_client import ensure_server, find_ollama_exe, has_model, pull_model, remove_ollama_from_startup
 from thuc_xuat.proc import install_no_window_defaults, popen, run
 from thuc_xuat.version import __version__
 
@@ -328,6 +328,8 @@ class SetupWindow(tk.Tk):
       self.check_cancel()
       self.post(self.set_status, "Đang bật Ollama...")
       ensure_server(on_status=lambda msg: self.post(self.set_status, msg))
+      # Ollama chỉ chạy khi app chạy — bỏ tự khởi động cùng Windows.
+      remove_ollama_from_startup()
 
       if has_model(model):
         self.post(self.log, f"Model {model} đã có sẵn")

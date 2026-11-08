@@ -70,6 +70,13 @@ class ThucXuatApp(tk.Tk):
     self._updating = False
 
     self._build_ui()
+    self.protocol("WM_DELETE_WINDOW", self._on_close)
+    # Ollama chỉ chạy khi app chạy: xóa shortcut tự khởi động cùng Windows.
+    try:
+      from thuc_xuat.ollama_client import remove_ollama_from_startup
+      remove_ollama_from_startup()
+    except Exception:
+      pass
     self.after(400, self._startup_check_ollama)
     self.after(1500, self._check_update_silent)
 
@@ -261,6 +268,15 @@ class ThucXuatApp(tk.Tk):
       self.img_list.insert(tk.END, p.name)
     n_excel = len(self.jobs)
     self.img_label.config(text=f"{len(self.all_images)} ảnh / {n_excel} phiếu")
+
+  def _on_close(self) -> None:
+    """Đóng app: tắt Ollama nếu chính app đã bật (model chỉ chạy khi app chạy)."""
+    try:
+      from thuc_xuat.ollama_client import stop_server
+      stop_server()
+    except Exception:
+      pass
+    self.destroy()
 
   def _startup_check_ollama(self) -> None:
     """Mở app là bật Ollama + kiểm tra model."""
@@ -510,6 +526,11 @@ class ThucXuatApp(tk.Tk):
       "App sẽ đóng và mở lại bản mới trong vài giây.\n\n"
       "Nếu không thấy app mở lại, hãy mở ThucXuatTool.exe trong thư mục cũ.",
     )
+    try:
+      from thuc_xuat.ollama_client import stop_server
+      stop_server()
+    except Exception:
+      pass
     self.after(300, self.destroy)
 
   def _on_include_name_toggle(self) -> None:
