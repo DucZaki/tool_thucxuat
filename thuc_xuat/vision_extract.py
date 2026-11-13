@@ -32,7 +32,8 @@ Quy tắc:
 - Chỉ đọc cột THỰC XUẤT viết tay. KHÔNG đọc tên hàng, KHÔNG đọc cột ghi chú.
 - BƯỚC 1: xác định STT dòng ĐẦU và dòng CUỐI nhìn thấy. BƯỚC 2: chỉ đọc các dòng trong khoảng đó.
 - CHỈ ghi các STT CÓ TRONG ẢNH, không ghi tiếp tới {max_stt}.
-- Ô chỉ có dấu tick → "✓". Ô chỉ có X → "X". Ô trống thực sự → bỏ STT đó.
+- Ô chỉ có dấu tick → "✓". Ô có chữ X / gạch chéo → "X" (phiếu KHÔNG có chữ Y;
+  nét nào giống chữ Y vẫn là X). Ô trống thực sự → bỏ STT đó.
 - Giữ đơn vị viết tay: "14 con", "5,5", "1T", "10H", "5T x 24".
 - Chữ T viết tay giống số 7 → ghi T: "1T", "4T", "10T", không ghi 17/47/107.
 - Không tự nhân/quy đổi.
@@ -56,8 +57,9 @@ OLLAMA_ASSIGN_PROMPT = """Ảnh là một trang bảng phiếu xuất kho Việt
 Trả JSON thuần (không markdown):
 {"stt_dau": 19, "ten": ["tên dòng 1", "tên dòng 2", "tên dòng 3"]}"""
 
-# "5 X" / "10x" — model đọc nhầm số in ở cột Đặt rồi ghép với chữ X viết tay.
-_X_ONLY_RE = re.compile(r"^(?:\d+(?:[.,]\d+)?\s*)?[xX]$")
+# "5 X" / "10x" / "Y" — model đọc nhầm số in ở cột Đặt rồi ghép với chữ X viết
+# tay, hoặc đọc nét gạch chéo thành Y. Tất cả đều là "bỏ dòng".
+_X_ONLY_RE = re.compile(r"^(?:\d+(?:[.,]\d+)?\s*)?[xXyY]$")
 
 
 def _parse_thuc_xuat_dict(raw: dict) -> dict[int, str]:
@@ -98,7 +100,8 @@ def _normalize_ollama_value(value: str) -> str:
   """Chuẩn hóa giá trị gemma trả về.
 
   gemma3:4b hay gộp số in ở cột «Đặt» với chữ X viết tay ("5 X", "10x")
-  → quy về "X" để đúng quy tắc: có X là bỏ dòng.
+  → quy về "X" để đúng quy tắc: có X là bỏ dòng. Nét gạch chéo bị đọc thành
+  Y cũng quy về "X" (trên phiếu không có chữ Y).
   """
   s = str(value or "").strip().strip('"').strip("'").strip()
   # Dấu câu thừa cuối giá trị ("10.", "X,", "✓.") — bỏ để khớp quy tắc.

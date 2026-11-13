@@ -67,11 +67,25 @@ app xuất lại từ kết quả đã có, **không đọc lại ảnh**.
 
 Thư mục xuất đổi được trong `config.json` (`output_dir`), mặc định `KetQua`.
 
+### Sửa file đã xuất (kể cả file của lần chạy trước)
+
+Khung **3. Kết quả** có ô **«Sửa file đã xuất»**:
+
+1. Chọn 1 file `.xlsx` trong danh sách (hoặc **«Chọn file khác...»** nếu file nằm ngoài `KetQua`)
+2. Bấm **«Mở để sửa...»** — bảng hiện Mã SP + Thực xuất của file đó
+3. Nháy đúp 1 dòng để sửa số (để trống hoặc nhập `x` = xóa dòng), `Delete` để xóa dòng
+4. **Ctrl+S** hoặc **«Lưu (xuất lại file)»** — ghi đè đúng file đang sửa;
+   **«Lưu thành file mới...»** để giữ bản cũ
+
+Không cần ảnh hay Excel gốc, không cần chạy lại AI. Dùng được sau khi tắt/mở app.
+
+
 ## Quy tắc nghiệp vụ
 
 | Phiếu (cột Thực xuất) | Kết quả |
 |-----------------------|---------|
 | `X` / `x` | Bỏ dòng |
+| `Y` / `y` (nét gạch chéo bị đọc nhầm) | Bỏ dòng — phiếu không có chữ Y |
 | `3T*3`, `5T x 24`, `3TX6` | Có dấu nhân thì nhân: 9, 120, 18 |
 | `10T`, `4T`, `1T`, `12` | Bỏ chữ, giữ nguyên số: 10, 4, 1, 12 |
 | `30cm`, `10 gói`, `30kg`, `18 quả` | Bỏ đơn vị, giữ nguyên số: 30, 10, 30, 18 |

@@ -9,8 +9,20 @@ from thuc_xuat.vision_extract import (
   _commit_image_map,
   _looks_like_qty,
   _maps_contiguous,
+  _normalize_ollama_value,
   _parse_ollama_response,
 )
+
+
+class NormalizeValueTests(unittest.TestCase):
+  def test_y_read_for_x_becomes_x(self):
+    # Phiếu không có chữ Y: nét gạch chéo X bị đọc thành Y → phải là "X".
+    for value in ("Y", "y", "5 Y", "10y", "X", "x", "5 X"):
+      self.assertEqual(_normalize_ollama_value(value), "X", value)
+
+  def test_numbers_untouched(self):
+    for value in ("10", "1T", "5T x 24", "10H", "✓"):
+      self.assertEqual(_normalize_ollama_value(value), value)
 
 
 class LooksLikeQtyTests(unittest.TestCase):

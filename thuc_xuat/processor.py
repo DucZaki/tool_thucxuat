@@ -29,7 +29,10 @@ class OutputRow:
     unit: str = ""
 
 
-TICK_MARKS = frozenset({"✓", "✔", "v", "V", "Y", "y", ">", "/", "√"})
+TICK_MARKS = frozenset({"✓", "✔", "v", "V", ">", "/", "√"})
+
+# Phiếu không có chữ Y. Nét gạch chéo (X) hay bị đọc thành Y → vẫn là "bỏ dòng".
+_X_OR_Y_RE = re.compile(r"^(?:\d+(?:[.,]\d+)?)?[XY]$")
 
 _COUNT_UNITS = (
   "gói", "goi", "hộp", "hop", "khay", "con", "chai", "lốc", "loc", "lon",
@@ -171,7 +174,8 @@ def parse_qty(
   Chuyển ghi chú thực xuất thành số.
 
   - X / trống -> None (bỏ dòng)
-  - Chỉ tick (✓ v V Y > / √) -> lấy số lượng đặt
+  - Y (nét gạch chéo bị đọc nhầm) -> None (bỏ dòng)
+  - Chỉ tick (✓ v V > / √) -> lấy số lượng đặt
   - Có dấu nhân -> nhân: '3T*3' -> 9, '5T x 24' -> 120
   - Không có dấu nhân -> giữ nguyên số, KHÔNG quy đổi theo ĐVT:
     '10 gói' -> 10, '30kg' -> 30, '30cm' -> 30, '1T' -> 1, '12' -> 12
@@ -180,7 +184,13 @@ def parse_qty(
   if raw is None:
     return None
   s = str(raw).strip()
-  if not s or s.upper() == "X":
+  if not s:
+    return None
+  # "X", "5X", "Y", "5 Y" — cùng nghĩa: bỏ dòng. Trên phiếu không có chữ Y,
+  # model hay đọc nét gạch chéo X thành Y (trước đây Y bị coi là dấu tick nên
+  # dòng đáng bỏ lại bị xuất với số lượng đặt).
+  compact_marks = re.sub(r"\s+", "", s.upper())
+  if _X_OR_Y_RE.fullmatch(compact_marks):
     return None
   if s in TICK_MARKS:
     value = _as_number(ordered_qty)

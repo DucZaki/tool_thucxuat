@@ -81,9 +81,16 @@ class ParseQtyTests(unittest.TestCase):
 
   def test_tick_uses_ordered(self):
     self.assertEqual(parse_qty("✓", 5), 5)
-    self.assertEqual(parse_qty("Y", 15), 15)
-    self.assertEqual(parse_qty("y", 15), 15)
     self.assertEqual(parse_qty("✓", 5.5), 5.5)
+    self.assertEqual(parse_qty("v", 5), 5)
+
+  def test_y_is_x_not_tick(self):
+    # Phiếu không có chữ Y: nét gạch chéo X bị đọc thành Y → vẫn là bỏ dòng.
+    self.assertIsNone(parse_qty("Y", 15))
+    self.assertIsNone(parse_qty("y", 15))
+    self.assertIsNone(parse_qty("5 Y", 15))
+    self.assertIsNone(parse_qty("10y", 15))
+    self.assertIsNone(parse_qty("5X", 15))
 
   def test_t_read_as_7_repaired_with_ordered_qty(self):
     # AI đọc chữ T (thùng) thành 7: "47" khi SL đặt 4 → 4T

@@ -22,6 +22,13 @@ from thuc_xuat.config import (
 from thuc_xuat.image_match import pdn_from_excel
 from thuc_xuat.image_prep import warp_available
 from thuc_xuat.io_json import save_mapping
+from thuc_xuat.output_edit import (
+  OutputFormatError,
+  OutputSheet,
+  list_outputs,
+  load_sheet,
+  save_sheet,
+)
 from thuc_xuat.pipeline import BatchResult, ProcessResult, process_batch_like_chat
 from thuc_xuat.processor import (
   build_output,
@@ -197,6 +204,30 @@ class ThucXuatApp(tk.Tk):
     self.folder_label.pack(side=tk.LEFT, padx=10)
     self._refresh_folder_label()
 
+    edit_bar = ttk.Frame(preview)
+    edit_bar.pack(fill=tk.X, pady=(0, 6))
+    ttk.Label(edit_bar, text="Sửa file đã xuất:").pack(side=tk.LEFT)
+    self.output_var = tk.StringVar()
+    self.output_combo = ttk.Combobox(
+      edit_bar,
+      textvariable=self.output_var,
+      state="readonly",
+      width=54,
+    )
+    self.output_combo.pack(side=tk.LEFT, padx=6)
+    self.output_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_output_selected())
+    ttk.Button(
+      edit_bar, text="↻", width=3, command=lambda: self._refresh_output_files()
+    ).pack(side=tk.LEFT)
+    ttk.Button(
+      edit_bar, text="Mở để sửa...", command=self.open_output_editor
+    ).pack(side=tk.LEFT, padx=6)
+    ttk.Button(
+      edit_bar, text="Chọn file khác...", command=self.browse_output_file
+    ).pack(side=tk.LEFT)
+    self._output_files: list[Path] = []
+    self._refresh_output_files()
+
     cols = ("stt", "code", "name", "unit", "ordered", "raw", "qty")
     self.tree = ttk.Treeview(preview, columns=cols, show="headings")
     for c, t, w in [
@@ -347,6 +378,75 @@ class ThucXuatApp(tk.Tk):
       return
     self.folder_label.config(text=f"Thư mục xuất: {folder}")
 
+  def _refresh_output_files(self, select: str | None = None) -> None:
+    """Nạp danh sách file .xlsx trong thư mục xuất vào ô chọn."""
+    try:
+      files = list_outputs(output_dir())
+    except OSError:
+      files = []
+    self._output_files = files
+    names = [p.name for p in files]
+    self.output_combo["values"] = names
+    current = (select or self.output_var.get()).strip()
+    if current in names:
+      self.output_var.set(current)
+    elif names:
+      self.output_var.set(names[0])
+    else:
+      self.output_var.set("")
+
+  def _on_output_selected(self) -> None:
+    name = self.output_var.get().strip()
+    path = next((p for p in getattr(self, "_output_files", []) if p.name == name), None)
+    if path is not None:
+      self.status.config(text=f"Đã chọn để sửa: {path}")
+
+  def _output_path_selected(self) -> Path | None:
+    name = self.output_var.get().strip()
+    return next((p for p in getattr(self, "_output_files", []) if p.name == name), None)
+
+  def browse_output_file(self) -> None:
+    """Chọn 1 file kết quả ở bất kỳ đâu trên máy để sửa."""
+    initial = output_dir()
+    path = filedialog.askopenfilename(
+      title="Chọn file kết quả đã xuất để sửa",
+      initialdir=str(initial) if initial.is_dir() else None,
+      filetypes=[("Excel", "*.xlsx")],
+    )
+    if not path:
+      return
+    self._open_editor_for(Path(path))
+
+  def open_output_editor(self) -> None:
+    """Mở cửa sổ sửa file đã chọn trong danh sách thư mục xuất."""
+    path = self._output_path_selected()
+    if path is None:
+      if not self._output_files:
+        messagebox.showinfo(
+          "Chưa có file",
+          "Thư mục xuất chưa có file Excel nào.\n\n"
+          "Bấm «Tạo file Excel» trước, hoặc dùng «Chọn file khác...» "
+          "để mở một file đã xuất trước đó.",
+        )
+        return
+      messagebox.showinfo("Chưa chọn file", "Chọn 1 file trong danh sách rồi bấm lại.")
+      return
+    self._open_editor_for(path)
+
+  def _open_editor_for(self, path: Path) -> None:
+    try:
+      sheet = load_sheet(path)
+    except OutputFormatError as exc:
+      messagebox.showerror("Không mở được file", str(exc))
+      return
+    if not sheet.rows:
+      messagebox.showinfo(
+        "File trống",
+        f"«{path.name}» không có dòng nào để sửa.",
+      )
+      return
+    OutputEditor(self, sheet)
+
   def open_output_folder(self) -> None:
     """Mở thư mục chứa file kết quả trong Explorer (tạo nếu chưa có)."""
     try:
@@ -354,8 +454,19 @@ class ThucXuatApp(tk.Tk):
     except OSError as exc:
       messagebox.showerror("Không mở được thư mục", str(exc))
       return
-    reveal_in_folder(folder)
-    self.status.config(text=f"Thư mục xuất: {folder}")
+    self._refresh_folder_label()
+    if reveal_in_folder(folder):
+      self.status.config(text=f"Đã mở thư mục xuất: {folder}")
+      return
+    # Không mở được Explorer (bản Windows tối giản, quyền hạn, shell lỗi...)
+    # → nói rõ đường dẫn để người dùng mở bằng tay.
+    messagebox.showwarning(
+      "Không mở được thư mục",
+      f"Windows không mở được Explorer cho thư mục:\n{folder}\n\n"
+      "Bạn mở bằng tay đường dẫn trên (hoặc Copy rồi dán vào thanh địa chỉ).",
+    )
+    self.status.config(text=f"Thư mục xuất (mở bằng tay): {folder}")
+
 
   def _check_update_silent(self) -> None:
     self._check_update_async(interactive=False)
@@ -549,7 +660,11 @@ class ThucXuatApp(tk.Tk):
       messagebox.showinfo("Chưa có kết quả", "Bấm «Tạo file Excel» trước.")
       return
     include_name = bool(self.include_name_var.get())
-    folder = output_dir()
+    try:
+      folder = output_dir()
+    except OSError as exc:
+      messagebox.showerror("Không ghi được file", str(exc))
+      return
     written: list[Path] = []
     for job in self.jobs:
       result = self.results_by_excel.get(job.excel_path)
@@ -579,6 +694,7 @@ class ThucXuatApp(tk.Tk):
     if not written:
       return
     self._fill_preview()
+    self._refresh_output_files()
     if auto_open_output_folder():
       reveal_outputs(written)
     kind = "kèm Tên sản phẩm" if include_name else "2 cột (Mã + Thực xuất)"
@@ -619,6 +735,19 @@ class ThucXuatApp(tk.Tk):
     for path in paths:
       pp = Path(path).resolve()
       if pp in existing:
+        continue
+      # Người dùng hay chọn nhầm file KẾT QUẢ đã xuất (cũng là .xlsx) làm
+      # Excel gốc — app sẽ đọc sai cột. Nhận ra và nhắc thay vì tạo phiếu rác.
+      try:
+        load_sheet(pp)
+      except OutputFormatError:
+        pass
+      else:
+        messagebox.showwarning(
+          "Đây là file kết quả",
+          f"«{pp.name}» là file kết quả app đã xuất (chỉ có Mã SP + Thực xuất).\n\n"
+          "Hãy chọn file Excel gốc (DanhSachChiTietDatHangNhap_*.xlsx).",
+        )
         continue
       try:
         products = load_products(pp)
@@ -764,7 +893,7 @@ class ThucXuatApp(tk.Tk):
       "Sau khi chạy, đổi tick rồi bấm «Xuất lại file kết quả»\n"
       "để xuất bản còn lại mà không phải đọc ảnh lại.\n\n"
       "Quy tắc:\n"
-      "• X → bỏ dòng\n"
+      "• X (hoặc nét bị đọc thành Y) → bỏ dòng\n"
       "• Có dấu nhân thì mới nhân: 3T*3 → 9, 5T x 24 → 120\n"
       "• Không có dấu nhân: giữ nguyên số, bỏ chữ:\n"
       "    1T → 1, 4T → 4, 12 → 12, 30cm → 30\n"
@@ -772,9 +901,14 @@ class ThucXuatApp(tk.Tk):
       "• Chỉ tick ✓ → lấy số lượng đặt\n\n"
       "Dòng tô VÀNG = số xuất lớn bất thường so với SL đặt\n"
       "(nghi AI đọc sai) — nháy đúp để sửa tay.\n"
+      "Sửa file ĐÃ XUẤT (kể cả file của lần chạy trước):\n"
+      "ô «Sửa file đã xuất» ở khung 3 → chọn file → «Mở để sửa»\n"
+      "→ nháy đúp để sửa số, Delete để xóa dòng, Ctrl+S để lưu.\n"
+      "Lưu xong có thể «Lưu thành file mới» nếu muốn giữ bản cũ.\n"
       "Nút «Xóa tất cả» bỏ hết Excel + ảnh khỏi danh sách\n"
       "(không xóa file trên máy).\n\n"
       "AI: Ollama local (gemma3:4b) — không cần mạng.\n"
+      f"Đang dùng model: {get_ollama_settings()['model']}.\n"
       "App tự bật Ollama và tự kiểm tra model khi mở.\n"
       "Đổi model: sửa «ollama_model» trong config.json cạnh app\n"
       "(vd gemma3:12b chính xác hơn, cần tải trước).\n\n"
@@ -893,6 +1027,8 @@ class ThucXuatApp(tk.Tk):
     self.reexport_btn.config(
       state=tk.NORMAL if self.results_by_excel else tk.DISABLED
     )
+    self._refresh_output_files()
+
 
     if batch.ok_count and auto_open_output_folder():
       reveal_outputs([r.output_path for r in batch.results])
@@ -1064,6 +1200,209 @@ class ThucXuatApp(tk.Tk):
       text=f"Đã sửa STT {stt} → lưu lại {result.output_path.name} "
       f"({len(included)} dòng xuất)"
     )
+
+
+class OutputEditor(tk.Toplevel):
+  """Cửa sổ sửa trực tiếp 1 file kết quả đã xuất (không cần đọc lại ảnh)."""
+
+  def __init__(self, app: "ThucXuatApp", sheet: OutputSheet) -> None:
+    super().__init__(app)
+    self.app = app
+    self.sheet = sheet
+    self.title(f"Sửa file đã xuất — {sheet.path.name}")
+    self.geometry("820x560")
+    self.minsize(680, 420)
+    self.transient(app)
+    self._build()
+    self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+  def _build(self) -> None:
+    head = ttk.Frame(self, padding=(10, 8, 10, 4))
+    head.pack(fill=tk.X)
+    ttk.Label(head, text=str(self.sheet.path), foreground="#666").pack(side=tk.LEFT)
+    self.summary = ttk.Label(head, text="", foreground="#666")
+    self.summary.pack(side=tk.RIGHT)
+
+    body = ttk.Frame(self, padding=(10, 0, 10, 4))
+    body.pack(fill=tk.BOTH, expand=True)
+
+    cols = ("stt", "code", "name", "qty") if self.sheet.has_name else ("stt", "code", "qty")
+    self.tree = ttk.Treeview(body, columns=cols, show="headings")
+    for c, text, width, anchor in [
+      ("stt", "STT", 50, tk.CENTER),
+      ("code", "Mã SP", 150, tk.W),
+      ("name", "Tên hàng", 360, tk.W),
+      ("qty", "Thực xuất", 100, tk.CENTER),
+    ]:
+      if c not in cols:
+        continue
+      self.tree.heading(c, text=text)
+      self.tree.column(c, width=width, anchor=anchor)
+    self.tree.tag_configure("edited", background="#eef7ee")
+    self.tree.bind("<Double-1>", self._edit_selected)
+    self.tree.bind("<Delete>", lambda _e: self._remove_selected())
+    scroll = ttk.Scrollbar(body, orient=tk.VERTICAL, command=self.tree.yview)
+    self.tree.configure(yscrollcommand=scroll.set)
+    self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+    bar = ttk.Frame(self, padding=(10, 4, 10, 10))
+    bar.pack(fill=tk.X)
+    ttk.Button(bar, text="Sửa dòng (nháy đúp)", command=self._edit_selected).pack(side=tk.LEFT)
+    ttk.Button(bar, text="Xóa dòng", command=self._remove_selected).pack(side=tk.LEFT, padx=6)
+    self.save_btn = ttk.Button(
+      bar, text="Lưu (xuất lại file)", command=self._save
+    )
+    self.save_btn.pack(side=tk.LEFT, padx=(18, 6))
+    ttk.Button(bar, text="Lưu thành file mới...", command=self._save_as).pack(side=tk.LEFT)
+    ttk.Button(bar, text="Đóng", command=self._on_close).pack(side=tk.RIGHT)
+
+    self.status = ttk.Label(self, text="", padding=6, relief=tk.SUNKEN)
+    self.status.pack(fill=tk.X, side=tk.BOTTOM)
+    self.bind("<Control-s>", lambda _e: self._save())
+    self._fill()
+    self.status.config(text="Nháy đúp 1 dòng để sửa số Thực xuất • Ctrl+S để lưu")
+    if any(
+      r.output_path == self.sheet.path for r in self.app.results_by_excel.values()
+    ):
+      self.status.config(
+        text="Lưu ý: file này cũng là kết quả của phiếu đang mở trong app — "
+        "bấm «Xuất lại file kết quả» ở cửa sổ chính sẽ ghi đè thay đổi tại đây."
+      )
+
+  def _fill(self) -> None:
+    for item in self.tree.get_children():
+      self.tree.delete(item)
+    for i, row in enumerate(self.sheet.rows):
+      values = [i + 1, row.code]
+      if self.sheet.has_name:
+        values.append(row.name)
+      values.append("" if row.qty is None else row.qty)
+      self.tree.insert("", tk.END, iid=str(i), values=tuple(values))
+    self.summary.config(text=f"{len(self.sheet.rows)} dòng")
+
+  def _selected_index(self) -> int | None:
+    sel = self.tree.selection()
+    if not sel:
+      return None
+    try:
+      return int(sel[0])
+    except (TypeError, ValueError):
+      return None
+
+  def _edit_selected(self, _event=None) -> None:
+    idx = self._selected_index()
+    if idx is None or idx >= len(self.sheet.rows):
+      return
+    row = self.sheet.rows[idx]
+    current = "" if row.qty is None else str(row.qty)
+    name_line = f"Tên: {row.name[:70]}\n" if row.name else ""
+    value = simpledialog.askstring(
+      "Sửa dòng",
+      f"Mã: {row.code}\n{name_line}\n"
+      "Nhập số thực xuất (vd 10, 5,5).\n"
+      "Để trống hoặc nhập x = xóa dòng khỏi file.",
+      initialvalue=current,
+      parent=self,
+    )
+    if value is None:
+      return
+    text = value.strip()
+    if not text or text.lower() in ("x", "y"):
+      self._delete_row(idx)
+      return
+    try:
+      number = float(text.replace(",", "."))
+    except ValueError:
+      messagebox.showwarning(
+        "Số không hợp lệ",
+        f"«{text}» không phải số.\nVí dụ hợp lệ: 10 ; 5,5 ; 120",
+        parent=self,
+      )
+      return
+    if number <= 0:
+      messagebox.showwarning("Số không hợp lệ", "Thực xuất phải lớn hơn 0.", parent=self)
+      return
+    row.qty = int(number) if number.is_integer() else number
+    self.sheet.dirty = True
+    self._fill()
+    self.tree.selection_set(str(idx))
+    self.tree.see(str(idx))
+    self.status.config(text=f"Đã sửa dòng {idx + 1} → {row.qty} (chưa ghi vào file)")
+
+  def _remove_selected(self) -> None:
+    idx = self._selected_index()
+    if idx is not None:
+      self._delete_row(idx)
+
+  def _delete_row(self, idx: int) -> None:
+    if not (0 <= idx < len(self.sheet.rows)):
+      return
+    row = self.sheet.rows[idx]
+    if not messagebox.askyesno(
+      "Xóa dòng",
+      f"Xóa dòng «{row.code}» khỏi file?\n\n"
+      "(File chỉ mất dòng này; không ảnh hưởng ảnh hay Excel gốc.)",
+      parent=self,
+    ):
+      return
+    self.sheet.rows.pop(idx)
+    self.sheet.dirty = True
+    self._fill()
+    self.status.config(text=f"Đã xóa 1 dòng — còn {len(self.sheet.rows)} dòng (chưa lưu)")
+
+  def _save(self) -> bool:
+    return self._write(self.sheet.path)
+
+  def _save_as(self) -> bool:
+    path = filedialog.asksaveasfilename(
+      parent=self,
+      title="Lưu thành file mới",
+      defaultextension=".xlsx",
+      initialfile=self.sheet.path.stem + "_sua.xlsx",
+      initialdir=str(self.sheet.path.parent),
+      filetypes=[("Excel", "*.xlsx")],
+    )
+    if not path:
+      return False
+    return self._write(Path(path))
+
+  def _write(self, path: Path) -> bool:
+    try:
+      saved = save_sheet(self.sheet, path)
+    except PermissionError:
+      messagebox.showerror(
+        "Không ghi được file",
+        f"«{path.name}» đang mở trong Excel (hoặc bị khóa).\n\n"
+        "Đóng file đó rồi bấm Lưu lại.",
+        parent=self,
+      )
+      return False
+    except Exception as exc:  # noqa: BLE001 — báo lỗi rõ thay vì im lặng
+      messagebox.showerror("Không lưu được", str(exc), parent=self)
+      return False
+    self.sheet.path = saved
+    self.title(f"Sửa file đã xuất — {saved.name}")
+    self.status.config(text=f"Đã lưu {len(self.sheet.rows)} dòng → {saved}")
+    try:
+      self.app._refresh_output_files(select=saved.name)
+      self.app.status.config(text=f"Đã lưu lại file đã xuất: {saved.name}")
+    except Exception:
+      pass
+    return True
+
+  def _on_close(self) -> None:
+    if self.sheet.dirty:
+      answer = messagebox.askyesnocancel(
+        "Chưa lưu",
+        "Có thay đổi chưa ghi vào file.\n\nLưu lại trước khi đóng?",
+        parent=self,
+      )
+      if answer is None:
+        return
+      if answer and not self._save():
+        return
+    self.destroy()
 
 
 def run_gui() -> None:
