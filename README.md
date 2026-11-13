@@ -53,17 +53,28 @@ Muốn chính xác hơn: đổi `ollama_model` sang `gemma3:12b` (cần `ollama 
 4. **Kiểm tra bảng Kết quả**, sửa dòng sai bằng nháy đúp
 5. Bấm **Mở thư mục xuất** để mở thư mục `KetQua` trong Explorer
 
-### Xuất kèm cột «Tên sản phẩm»
+### File xuất
 
-Tick **«Xuất kèm cột Tên sản phẩm»** trước khi chạy → file có 3 cột
-`Mã sản phẩm | Tên sản phẩm | Thực xuất`, tên file thêm hậu tố `_KemTen`
-(vd `PDN014324_MaSanPham_ThucXuat_KemTen.xlsx`) để không ghi đè bản 2 cột.
+File kết quả luôn có **2 cột**: `Mã sản phẩm | Thực xuất` — dùng để nhập KiotViet.
+Tên hàng vẫn hiển thị trong bảng «Kết quả» của app và trong cửa sổ «Sửa file đã xuất»
+(lấy từ Excel gốc / file JSON phụ cạnh file kết quả), **không** còn cột Tên trong Excel xuất ra.
 
-Đã chạy xong rồi mới đổi ý: đổi tick rồi bấm **«Xuất lại file kết quả»** —
-app xuất lại từ kết quả đã có, **không đọc lại ảnh**.
+### Sửa file đã xuất (kể cả file của lần chạy trước)
 
-- File **2 cột** dùng để nhập KiotViet.
-- File **3 cột** dùng để rà soát/đối chiếu với phiếu giấy.
+Khung **3. Kết quả** có ô **«Sửa file đã xuất»**:
+
+1. Chọn 1 file `.xlsx` trong danh sách (hoặc **«Chọn file khác...»** nếu file nằm ngoài `KetQua`)
+2. Bấm **«Mở để sửa...»** — bảng hiện Mã SP + Tên hàng + Thực xuất của file đó
+3. Nháy đúp 1 dòng để sửa số (để trống hoặc nhập `x` = xóa dòng), `Delete` để xóa dòng
+4. **Ctrl+S** hoặc **«Lưu (xuất lại file)»** — ghi đè đúng file đang sửa;
+   **«Lưu thành file mới...»** để giữ bản cũ
+
+Không cần ảnh hay Excel gốc, không cần chạy lại AI. Dùng được sau khi tắt/mở app.
+
+### Xuất lại file kết quả
+
+Đã chạy xong rồi muốn làm mới file (vd sau khi sửa tay nhiều dòng):
+bấm **«Xuất lại file kết quả»** — app xuất lại từ kết quả đã có, **không đọc lại ảnh**.
 
 Thư mục xuất đổi được trong `config.json` (`output_dir`), mặc định `KetQua`.
 

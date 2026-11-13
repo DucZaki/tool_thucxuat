@@ -14,14 +14,12 @@ from thuc_xuat.app_paths import app_dir
 from thuc_xuat.cancel import CancelledByUser
 from thuc_xuat.config import (
   auto_open_output_folder,
-  export_include_name,
   get_ollama_settings,
   output_dir,
-  set_config_value,
 )
 from thuc_xuat.image_match import pdn_from_excel
 from thuc_xuat.image_prep import warp_available
-from thuc_xuat.io_json import save_mapping
+from thuc_xuat.io_json import load_sidecar, save_mapping, update_sidecar_names
 from thuc_xuat.output_edit import (
   OutputFormatError,
   OutputSheet,
@@ -71,7 +69,6 @@ class ThucXuatApp(tk.Tk):
     self._cancel_event = threading.Event()
     self._busy = False
     self._multi_ok = False
-    self.include_name_var = tk.BooleanVar(value=export_include_name())
     self._update_info: UpdateInfo | None = None
     self._checking_update = False
     self._updating = False
@@ -164,19 +161,13 @@ class ThucXuatApp(tk.Tk):
 
     opts = ttk.Frame(action)
     opts.pack(fill=tk.X, pady=(8, 0))
-    ttk.Checkbutton(
-      opts,
-      text="Xuất kèm cột «Tên sản phẩm» (để đối chiếu)",
-      variable=self.include_name_var,
-      command=self._on_include_name_toggle,
-    ).pack(side=tk.LEFT)
     ttk.Button(opts, text="Mở thư mục xuất", command=self.open_output_folder).pack(
-      side=tk.LEFT, padx=12
+      side=tk.LEFT
     )
     self.update_btn = ttk.Button(
       opts, text="Kiểm tra cập nhật", command=self.on_update_click
     )
-    self.update_btn.pack(side=tk.LEFT)
+    self.update_btn.pack(side=tk.LEFT, padx=12)
 
     self.progress = ttk.Progressbar(action, mode="indeterminate")
     self.progress.pack(fill=tk.X, pady=8)
@@ -445,6 +436,27 @@ class ThucXuatApp(tk.Tk):
         f"«{path.name}» không có dòng nào để sửa.",
       )
       return
+    # Luôn hiện Tên hàng trong cửa sổ sửa — lấy từ JSON phụ, Excel gốc, hoặc
+    # phiếu đang mở trong phiên. File Excel xuất ra chỉ còn 2 cột.
+    names, source = load_sidecar(path.with_suffix(".json"))
+    if not names and source:
+      try:
+        from thuc_xuat.processor import load_products
+        for p in load_products(source):
+          names.setdefault(p.code, p.name)
+      except Exception:
+        pass
+    if not names:
+      for job in self.jobs:
+        try:
+          from thuc_xuat.processor import load_products
+          for p in load_products(job.excel_path):
+            names.setdefault(p.code, p.name)
+        except Exception:
+          continue
+    sheet.apply_names(names)
+    # Cửa sổ sửa luôn hiển thị cột Tên hàng (dù file chỉ có 2 cột).
+    sheet.show_name = True
     OutputEditor(self, sheet)
 
   def open_output_folder(self) -> None:
@@ -644,22 +656,12 @@ class ThucXuatApp(tk.Tk):
       pass
     self.after(300, self.destroy)
 
-  def _on_include_name_toggle(self) -> None:
-    enabled = bool(self.include_name_var.get())
-    set_config_value("export_include_name", enabled)
-    self.status.config(
-      text=(
-        f"File xuất tiếp theo {'CÓ' if enabled else 'KHÔNG'} cột Tên sản phẩm "
-        "— tuỳ chọn đã lưu vào config.json"
-      )
-    )
-
   def reexport_results(self) -> None:
     """Xuất lại các phiếu đã xử lý theo tuỳ chọn cột hiện tại (không đọc lại ảnh)."""
     if not self.results_by_excel:
       messagebox.showinfo("Chưa có kết quả", "Bấm «Tạo file Excel» trước.")
       return
-    include_name = bool(self.include_name_var.get())
+    include_name = False
     try:
       folder = output_dir()
     except OSError as exc:
@@ -681,6 +683,7 @@ class ThucXuatApp(tk.Tk):
           out.with_suffix(".json"),
           result.thuc_xuat_map,
           meta={"source": str(job.excel_path)},
+          names={row.code: row.name for row in (included + skipped) if row.name},
         )
       except Exception as exc:
         messagebox.showerror("Lỗi xuất lại", f"{job.excel_path.name}:\n{exc}")
@@ -888,10 +891,10 @@ class ThucXuatApp(tk.Tk):
       "Mã sản phẩm + Thực xuất.\n\n"
       "File kết quả nằm trong thư mục «KetQua» cạnh app.\n"
       "Bấm «Mở thư mục xuất» để mở thư mục đó.\n\n"
-      "Muốn đối chiếu dễ hơn: tick «Xuất kèm cột Tên sản phẩm»\n"
-      "→ file có thêm cột Tên (tên file ..._KemTen.xlsx).\n"
-      "Sau khi chạy, đổi tick rồi bấm «Xuất lại file kết quả»\n"
-      "để xuất bản còn lại mà không phải đọc ảnh lại.\n\n"
+      "File xuất gồm 2 cột: Mã sản phẩm + Thực xuất.\n"
+      "Tên hàng vẫn hiện trong bảng «Kết quả» và khi sửa file đã xuất.\n\n"
+      "Đã chạy xong rồi muốn kiểm lại: nháy đúp 1 dòng để sửa,\n"
+      "app tự lưu lại Excel.\n\n"
       "Quy tắc:\n"
       "• X (hoặc nét bị đọc thành Y) → bỏ dòng\n"
       "• Có dấu nhân thì mới nhân: 3T*3 → 9, 5T x 24 → 120\n"
@@ -969,7 +972,7 @@ class ThucXuatApp(tk.Tk):
     images = list(self.all_images)
     cancel_event = self._cancel_event
     out_dir = output_dir()
-    include_name = bool(self.include_name_var.get())
+    include_name = False
 
     def worker() -> None:
       err: Exception | None = None
@@ -1019,6 +1022,7 @@ class ThucXuatApp(tk.Tk):
           result.output_path.with_suffix(".json"),
           result.thuc_xuat_map,
           meta={"source": str(result.source_path)},
+          names={row.code: row.name for row in (result.included + result.skipped) if row.name},
         )
       except OSError:
         pass  # không lưu được JSON phụ cũng không ảnh hưởng file Excel
@@ -1053,10 +1057,7 @@ class ThucXuatApp(tk.Tk):
       return
 
     total_rows = sum(len(r.included) for r in batch.results)
-    include_name_done = batch.results[0].include_name if batch.results else False
-    mode = (
-      "Mã + Tên SP + Thực xuất" if include_name_done else "Mã + Thực xuất"
-    )
+    mode = "Mã + Thực xuất"
     if len(batch.results) == 1:
       r = batch.results[0]
       self.status.config(text=f"Xong: {len(r.included)} dòng → {r.output_path.name}")
@@ -1176,6 +1177,7 @@ class ThucXuatApp(tk.Tk):
         result.output_path.with_suffix(".json"),
         result.thuc_xuat_map,
         meta={"source": str(job.excel_path), "edited": True},
+        names={row.code: row.name for row in (included + skipped) if row.name},
       )
     except Exception as exc:
       # Hoàn tác để bảng xem trước không lệch với file trên đĩa.
@@ -1226,7 +1228,7 @@ class OutputEditor(tk.Toplevel):
     body = ttk.Frame(self, padding=(10, 0, 10, 4))
     body.pack(fill=tk.BOTH, expand=True)
 
-    cols = ("stt", "code", "name", "qty") if self.sheet.has_name else ("stt", "code", "qty")
+    cols = ("stt", "code", "name", "qty") if self.sheet.display_name else ("stt", "code", "qty")
     self.tree = ttk.Treeview(body, columns=cols, show="headings")
     for c, text, width, anchor in [
       ("stt", "STT", 50, tk.CENTER),
@@ -1275,7 +1277,7 @@ class OutputEditor(tk.Toplevel):
       self.tree.delete(item)
     for i, row in enumerate(self.sheet.rows):
       values = [i + 1, row.code]
-      if self.sheet.has_name:
+      if self.sheet.display_name:
         values.append(row.name)
       values.append("" if row.qty is None else row.qty)
       self.tree.insert("", tk.END, iid=str(i), values=tuple(values))
@@ -1383,6 +1385,13 @@ class OutputEditor(tk.Toplevel):
       return False
     self.sheet.path = saved
     self.title(f"Sửa file đã xuất — {saved.name}")
+    try:
+      update_sidecar_names(
+        saved.with_suffix(".json"),
+        {r.code: r.name for r in self.sheet.rows if r.name},
+      )
+    except Exception:
+      pass
     self.status.config(text=f"Đã lưu {len(self.sheet.rows)} dòng → {saved}")
     try:
       self.app._refresh_output_files(select=saved.name)

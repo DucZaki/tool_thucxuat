@@ -75,16 +75,18 @@ Khung «3. Kết quả» có ô «Sửa file đã xuất»:
 4. Ctrl+S (hoặc «Lưu (xuất lại file)») để ghi lại file;
    «Lưu thành file mới...» nếu muốn giữ bản cũ.
 Không cần ảnh, không cần Excel gốc, không phải đọc lại AI.
+Cửa sổ sửa luôn hiện Tên hàng (lấy từ Excel gốc / file JSON phụ).
 
-XUẤT KÈM TÊN SẢN PHẨM (để đối chiếu)
-------------------------------------
-- Tick «Xuất kèm cột Tên sản phẩm» trước khi bấm «Tạo file Excel»
-  -> file có 3 cột: Mã sản phẩm | Tên sản phẩm | Thực xuất
-     (tên file có thêm _KemTen, không ghi đè file 2 cột).
-- File 2 cột: dùng nhập KiotViet.
-- File 3 cột: dùng rà soát, đối chiếu phiếu giấy.
-- Đã chạy xong mới muốn bản còn lại: đổi tick rồi bấm
-  «Xuất lại file kết quả» — không phải đọc ảnh lại.
+FILE XUẤT RA
+------------
+File kết quả luôn có 2 cột: Mã sản phẩm + Thực xuất (dùng nhập KiotViet).
+Tên hàng vẫn hiện trong bảng «Kết quả» của app và trong cửa sổ «Sửa file đã xuất»
+(lấy từ Excel gốc / file JSON phụ cạnh file kết quả) — không còn cột Tên trong Excel xuất ra.
+
+XUẤT LẠI FILE KẾT QUẢ
+----------------------
+Đã chạy xong rồi muốn làm mới file (vd sau khi sửa tay nhiều dòng):
+bấm «Xuất lại file kết quả» — app xuất lại từ kết quả đã có, không đọc lại ảnh.
 
 CẬP NHẬT PHẦN MỀM
 ------------------

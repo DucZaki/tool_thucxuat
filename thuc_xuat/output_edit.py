@@ -32,6 +32,7 @@ class OutputSheet:
   path: Path
   rows: list[EditRow] = field(default_factory=list)
   has_name: bool = False
+  show_name: bool = False
   dirty: bool = False
 
   @property
@@ -39,6 +40,21 @@ class OutputSheet:
     if self.has_name:
       return [CODE_HEADER, NAME_HEADER, QTY_HEADER]
     return [CODE_HEADER, QTY_HEADER]
+
+  @property
+  def display_name(self) -> bool:
+    # Cửa sổ sửa luôn hiện tên hàng nếu đã có bất kỳ tên nào.
+    return self.show_name or any(bool(r.name) for r in self.rows)
+
+  def apply_names(self, mapping: dict[str, str]) -> int:
+    filled = 0
+    for row in self.rows:
+      if not row.name:
+        name = (mapping or {}).get(row.code)
+        if name:
+          row.name = str(name).strip()
+          filled += 1
+    return filled
 
   @property
   def total(self) -> int:
