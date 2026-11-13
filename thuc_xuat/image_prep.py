@@ -199,6 +199,80 @@ def _column_lines(img) -> list[int]:
   return xs
 
 
+def _digit_columns(img) -> list[float]:
+  """Tâm x của các «chữ số» nhỏ ở nửa phải bảng, sau khi bỏ đường kẻ.
+
+  Cột «Số lượng» in là cụm chữ số dày nhất và đều trên mọi dòng; cột viết tay
+  nằm bên phải nó. Dò theo cụm chữ số ổn định hơn dò theo đường kẻ (đường kẻ
+  hay bị watermark/lề làm lệch).
+  """
+  import cv2
+  import numpy as np
+
+  h, w = img.shape[:2]
+  gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+  bw = ((gray < 125) * 255).astype(np.uint8)
+  bw[: int(h * 0.10)] = 0
+  bw[int(h * 0.93) :] = 0
+  hor = cv2.morphologyEx(
+    bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (40, 1))
+  )
+  ver = cv2.morphologyEx(
+    bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, 40))
+  )
+  txt = cv2.subtract(bw, cv2.bitwise_or(hor, ver))
+  n, _lab, stats, cent = cv2.connectedComponentsWithStats(txt, 8)
+  out: list[float] = []
+  for i in range(1, n):
+    x, _y, ww, hh, area = stats[i]
+    if 15 <= area <= 1200 and 8 <= hh <= 60 and 3 <= ww <= 50 and x > w * 0.5:
+      out.append(float(cent[i][0]))
+  return out
+
+
+def _printed_column_bounds(img) -> tuple[int, int] | None:
+  """Tìm (trái, phải) của cột «Số lượng» in để cắt bỏ.
+
+  Lấy cụm chữ số có mật độ cao nhất ở nửa phải (cột in có số trên mọi dòng),
+  rồi mở rộng quanh cụm đó. Không chắc thì trả None — thà không cắt còn hơn
+  cắt lấn sang cột viết tay.
+  """
+  import numpy as np
+
+  width = img.shape[1]
+  centers = _digit_columns(img)
+  if len(centers) < 6:
+    return None
+  hist, edges = np.histogram(centers, bins=np.arange(0, width + 10, 10))
+  peak = int(np.argmax(hist))
+  if hist[peak] < 4:
+    return None
+  peak_x = float(edges[peak]) + 5.0
+  near = [x for x in centers if abs(x - peak_x) <= 45.0]
+  if len(near) < 4:
+    return None
+  left = max(4, int(min(near)) - 18)
+  right = min(width - 4, int(max(near)) + 18)
+  if right - left < 30 or right - left > 190:
+    return None
+  return left, right
+
+
+def _crop_printed_column(img):
+  """Cắt hẳn cột «Số lượng» in khỏi ảnh, không che trắng.
+
+  Cắt bỏ (thay vì che trắng) để không còn số in làm model đọc nhầm, và mép
+  cắt trùng đường kẻ nên không cắt mất chữ số viết tay đầu tiên.
+  """
+  import numpy as np
+
+  bounds = _printed_column_bounds(img)
+  if bounds is None:
+    return img
+  left, right = bounds
+  return np.hstack([img[:, :left], img[:, right:]])
+
+
 def _mask_printed_column(img):
   """Che cột "Số lượng" in sẵn trên ảnh bảng đã làm phẳng (đường kẻ thẳng đứng)."""
   return _mask_between_lines(img, _column_lines(img))
@@ -291,7 +365,7 @@ def warp_available() -> bool:
 
 
 def prepare_page(path: str | Path, bands: int = 0, allow_table: bool = True) -> list[ImageBand]:
-  """Ảnh 1 trang → 1 ảnh đã làm phẳng + che cột số lượng in.
+  """Ảnh 1 trang → 1 ảnh đã làm phẳng + cắt cột số lượng in.
 
   Thứ tự thử: khung bảng (chính xác nhất) → cả tờ giấy (che theo tỉ lệ) →
   cắt dải như cũ (khi không thấy cả bảng lẫn tờ giấy).
@@ -313,23 +387,15 @@ def prepare_page(path: str | Path, bands: int = 0, allow_table: bool = True) -> 
     if quad is not None:
       _, _, bw, bh = cv2.boundingRect(quad)
       table = _warp(bgr, quad, TABLE_WIDTH, max(200, int(TABLE_WIDTH * bh / bw)))
-      masked, did_mask = _mask_printed_column(table)
-      if did_mask:
-        return [_band_from_bgr(masked, "table")]
+      cropped = _crop_printed_column(table)
+      return [_band_from_bgr(cropped, "table")]
 
-  # 2) Cả tờ giấy: che cột số lượng in (dò đường kẻ dọc, không dùng tỉ lệ cố định).
+  # 2) Cả tờ giấy: cắt cột số lượng in (dò đường kẻ dọc, không dùng tỉ lệ cố định).
   quad = _find_quad(bgr, 0.18, 0.98, 0.3, 3.5)
   if quad is not None:
     page = _warp(bgr, quad, PAGE_WIDTH, PAGE_HEIGHT)
-    masked, did_mask = _mask_between_lines(page, _hough_column_lines(page))
-    if not did_mask:
-      # Không dò được đường kẻ → che theo tỉ lệ đã đo trên mẫu phiếu.
-      left = int(PAGE_WIDTH * PAGE_MASK_X[0])
-      right = int(PAGE_WIDTH * PAGE_MASK_X[1])
-      top = int(PAGE_HEIGHT * PAGE_MASK_Y0)
-      masked = page.copy()
-      cv2.rectangle(masked, (left, top), (right, PAGE_HEIGHT), (255, 255, 255), -1)
-    return [_band_from_bgr(masked, "page")]
+    cropped = _crop_printed_column(page)
+    return [_band_from_bgr(cropped, "page")]
 
   # 3) Không thấy giấy/bảng → cắt dải như cũ.
   return split_image(path, bands)

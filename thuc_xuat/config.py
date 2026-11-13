@@ -24,6 +24,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
   "ollama_bands": 0,
   "ollama_num_ctx": 8192,
   "ollama_timeout": 180,
+  # Giữ model trong RAM bao lâu sau lần đọc cuối (tránh nạp lại giữa lô ảnh).
+  "ollama_keep_alive": "30m",
 }
 
 OLLAMA_DEFAULT_BASE_URL = "http://127.0.0.1:11434"
@@ -87,6 +89,7 @@ def get_ollama_settings() -> dict[str, Any]:
     "bands": max(0, min(4, as_int(cfg.get("ollama_bands"), 0))),
     "num_ctx": max(2048, as_int(cfg.get("ollama_num_ctx"), 8192)),
     "timeout": max(30.0, as_float(cfg.get("ollama_timeout"), 180.0)),
+    "keep_alive": str(cfg.get("ollama_keep_alive") or "30m").strip() or "30m",
   }
 
 

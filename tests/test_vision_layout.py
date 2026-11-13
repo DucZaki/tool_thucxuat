@@ -4,9 +4,126 @@ import unittest
 from pathlib import Path
 
 from thuc_xuat.vision_extract import (
+  _accept_image_map,
   _best_names_match,
+  _commit_image_map,
+  _looks_like_qty,
   _maps_contiguous,
+  _parse_ollama_response,
 )
+
+
+class LooksLikeQtyTests(unittest.TestCase):
+  def test_quantities_accepted(self):
+    for value in (
+      "10", "110", "1T", "10H", "5T x 24", "3T×48", "14 con", "5,5",
+      "24 gói", "30cm", "X", "✓", "1↓", "5 thùng", "2 kg",
+    ):
+      self.assertTrue(_looks_like_qty(value), value)
+
+  def test_text_rejected(self):
+    for value in ("Vận chuyển", "IWATSUKA(Nagoya)", "giao sau", "Số lượng", ""):
+      self.assertFalse(_looks_like_qty(value), value)
+
+  def test_parse_drops_text_values(self):
+    text = (
+      '{"stt_dau": 1, "stt_cuoi": 3, '
+      '"thuc_xuat": {"1": "Vận chuyển", "2": "10", "3": "IWATSUKA(Nagoya)"}}'
+    )
+    self.assertEqual(_parse_ollama_response(text, 186), {2: "10"})
+
+
+class ParseOllamaRangeTests(unittest.TestCase):
+  def test_clamps_extrapolated_rows(self):
+    text = (
+      '{"stt_dau": 17, "stt_cuoi": 38, '
+      '"thuc_xuat": {"17": "10", "38": "10H", "39": "X", "186": "X"}}'
+    )
+    self.assertEqual(sorted(_parse_ollama_response(text, 186)), [17, 38])
+
+  def test_no_range_keeps_all(self):
+    text = '{"thuc_xuat": {"1": "5", "2": "X"}}'
+    self.assertEqual(sorted(_parse_ollama_response(text, 186)), [1, 2])
+
+  def test_bad_range_ignored_when_keys_outside(self):
+    text = (
+      '{"stt_dau": 1, "stt_cuoi": 1, '
+      '"thuc_xuat": {"17": "10", "18": "X", "19": "5"}}'
+    )
+    self.assertEqual(sorted(_parse_ollama_response(text, 186)), [17, 18, 19])
+
+
+class AcceptImageMapTests(unittest.TestCase):
+  def test_first_image_needs_contiguous_run(self):
+    self.assertTrue(_accept_image_map({1: "5", 2: "X", 3: "5"}, {}))
+
+  def test_first_scattered_footer_rejected(self):
+    self.assertFalse(_accept_image_map({1: "10", 17: "10", 23: "X"}, {}))
+
+  def test_later_image_overlapping_is_accepted(self):
+    base = {stt: "5" for stt in range(1, 11)}
+    self.assertTrue(_accept_image_map({10: "9", 11: "9"}, base))
+
+  def test_later_scattered_and_disjoint_rejected(self):
+    base = {1: "5", 2: "5"}
+    self.assertFalse(_accept_image_map({17: "5", 40: "5", 55: "5"}, base))
+
+
+class CommitImageMapTests(unittest.TestCase):
+  def test_first_image_wins_on_conflict(self):
+    merged: dict[int, str] = {}
+    scores: dict[int, int] = {}
+    _commit_image_map(merged, scores, {19: "10", 20: "4", 21: "X"})
+    # Ảnh sau đọc lệch nhưng không phải dòng sát mép → giữ ảnh đầu.
+    added, fixed = _commit_image_map(merged, scores, {19: "99", 20: "44", 21: "X"})
+    self.assertEqual((added, fixed), (0, 0))
+    self.assertEqual(merged[19], "10")
+    self.assertEqual(merged[20], "4")
+
+  def test_later_image_adds_new_rows_only(self):
+    merged: dict[int, str] = {}
+    scores: dict[int, int] = {}
+    _commit_image_map(merged, scores, {1: "10", 2: "X", 3: "4"})
+    added, fixed = _commit_image_map(
+      merged, scores, {2: "X", 3: "4", 4: "8", 5: "2", 6: "9"}
+    )
+    self.assertEqual(fixed, 0)
+    self.assertEqual(added, 3)
+    self.assertEqual(merged[1], "10")
+    self.assertEqual(merged[4], "8")
+
+  def test_edge_row_can_be_fixed_by_centered_read(self):
+    merged: dict[int, str] = {}
+    scores: dict[int, int] = {}
+    _commit_image_map(merged, scores, {10: "Sai", 11: "5", 12: "5"})
+    self.assertEqual(scores[10], 0)
+    # Ảnh sau thấy STT 10 ở giữa ảnh (điểm >= 3) → được sửa.
+    added, fixed = _commit_image_map(
+      merged, scores, {7: "1", 8: "1", 9: "1", 10: "10", 11: "1", 12: "1", 13: "1"}
+    )
+    self.assertEqual(fixed, 1)
+    self.assertEqual(merged[10], "10")
+    self.assertEqual(merged[11], "5")
+
+  def test_number_repairs_bogus_x(self):
+    merged: dict[int, str] = {}
+    scores: dict[int, int] = {}
+    _commit_image_map(merged, scores, {17: "X", 18: "X", 19: "X"})
+    added, fixed = _commit_image_map(
+      merged, scores, {10: "1", 11: "1", 12: "1", 17: "10", 18: "5", 19: "1"}
+    )
+    self.assertEqual(fixed, 2)
+    self.assertEqual(merged[17], "10")
+    self.assertEqual(merged[18], "5")
+    self.assertEqual(merged[19], "X")
+
+  def test_number_never_replaced_by_x(self):
+    merged: dict[int, str] = {}
+    scores: dict[int, int] = {}
+    _commit_image_map(merged, scores, {17: "10", 18: "5", 19: "7"})
+    _commit_image_map(merged, scores, {15: "1", 16: "1", 17: "X", 18: "X", 19: "1"})
+    self.assertEqual(merged[17], "10")
+    self.assertEqual(merged[18], "5")
 
 
 class MapsContiguousTests(unittest.TestCase):
@@ -115,6 +232,57 @@ class MaskBetweenLinesTests(unittest.TestCase):
     out, ok = _mask_between_lines(img, [50, 300, 700, 990])
     self.assertFalse(ok)
     self.assertTrue((out == 128).all())
+
+
+class PrintedColumnBoundsTests(unittest.TestCase):
+  def setUp(self):
+    try:
+      import numpy  # noqa: F401
+    except ImportError:
+      self.skipTest("chưa cài numpy")
+
+  def _blank(self, width: int = 1000):
+    import numpy as np
+
+    return np.full((400, width, 3), 255, dtype=np.uint8)
+
+  def test_finds_printed_column_of_digits(self):
+    from thuc_xuat.image_prep import _printed_column_bounds
+
+    img = self._blank()
+    # cột in: 20 chữ số nhỏ, đều mọi dòng
+    for i in range(20):
+      y = 20 + i * 18
+      img[y : y + 12, 700:715] = 0
+    # cột viết tay: ít ô hơn, nét lớn hơn, nằm bên phải
+    for i in range(10):
+      y = 20 + i * 36
+      img[y : y + 20, 850:890] = 0
+    bounds = _printed_column_bounds(img)
+    self.assertIsNotNone(bounds)
+    left, right = bounds
+    self.assertLessEqual(left, 700)
+    self.assertGreaterEqual(right, 715)
+    self.assertLess(right, 800)
+
+  def test_blank_image_returns_none(self):
+    from thuc_xuat.image_prep import _printed_column_bounds
+
+    self.assertIsNone(_printed_column_bounds(self._blank()))
+
+
+class FarGapTests(unittest.TestCase):
+  def test_contiguous_with_small_gaps_ok(self):
+    from thuc_xuat.vision_extract import _has_far_gap
+
+    self.assertFalse(_has_far_gap({17: "10", 18: "X", 21: "5", 22: "5"}))
+
+  def test_two_far_blocks_flagged(self):
+    from thuc_xuat.vision_extract import _has_far_gap
+
+    mp = {i: "1" for i in range(1, 17)}
+    mp[84] = "10"
+    self.assertTrue(_has_far_gap(mp))
 
 
 class PreparePageTests(unittest.TestCase):

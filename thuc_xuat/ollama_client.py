@@ -321,6 +321,7 @@ def chat_vision(
   timeout: float | None = None,
   num_ctx: int | None = None,
   cancel_event: threading.Event | None = None,
+  keep_alive: str | None = None,
 ) -> str:
   """Gửi prompt + 1 (hoặc vài) ảnh, trả về text model sinh ra.
 
@@ -347,6 +348,8 @@ def chat_vision(
     "format": "json",
     "options": {"temperature": 0, "num_ctx": ctx},
   }
+  if keep_alive:
+    payload["keep_alive"] = keep_alive
 
   parts: list[str] = []
   try:

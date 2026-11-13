@@ -7,3 +7,8 @@ __pycache__/
 *.pyc
 config.json
 KetQua/
+
+# Ảnh phiếu thật + thư mục chạy thử (không đưa lên repo)
+_run_iwatsuka/
+_test_run*/
+_test_run.log

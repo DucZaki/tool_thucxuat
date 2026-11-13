@@ -10,35 +10,43 @@ from pathlib import Path
 
 from thuc_xuat.cancel import CancelledByUser, check_cancel
 from thuc_xuat.config import get_ollama_settings
-from thuc_xuat.image_prep import prepare_page
+from thuc_xuat.image_prep import prepare_page, split_image
 from thuc_xuat.ollama_client import OllamaError, chat_vision
 
 # Retry khi 1 ảnh trả về 0 STT (AI bỏ qua trang)
-EMPTY_CHUNK_RETRIES = 3
+EMPTY_CHUNK_RETRIES = 5
 
 # ---------------------------------------------------------------------------
 # Ollama (gemma3:4b local) — prompt viết ngắn, nhấn mạnh cột viết tay.
 # 4b hay lẫn cột "Đặt" in sẵn với cột "Thực xuất" viết tay.
 # ---------------------------------------------------------------------------
-OLLAMA_SINGLE_PROMPT = """Bạn là OCR phiếu xuất kho Việt Nam. Ảnh là một phần của trang bảng in phiếu xuất kho.
+OLLAMA_SINGLE_PROMPT = """Bạn là OCR phiếu xuất kho. Ảnh là một trang bảng in (đã cắt cột «Số lượng đặt» in sẵn).
 
-Bảng có các cột: STT | Tên hàng | Số lượng (IN SẴN) | THỰC XUẤT (VIẾT TAY) | Ghi chú.
-Cột THỰC XUẤT là cột VIẾT TAY nằm NGAY BÊN PHẢI cột Số lượng in.
-Cột Số lượng in đã bị CHE TRẮNG trên ảnh — chỉ đọc cột viết tay.
+Bảng còn các cột, từ trái sang phải:
+- STT: số in nhỏ ở mép trái.
+- Tên hàng: chữ IN dài (tiếng Việt và/hoặc tiếng Nhật). TUYỆT ĐỐI KHÔNG chép cột này.
+- THỰC XUẤT: cột VIẾT TAY, mỗi ô rất ngắn (1–6 ký tự): số như 10, 5, 110, 5,5; hoặc 1T, 10H; hoặc dấu ✓; hoặc X.
+- Ghi chú: cột dấu ✓ ở mép phải — BỎ QUA.
 
-Đọc MỌI dòng nhìn thấy. Với mỗi STT, chép NGUYÊN VĂN ô THỰC XUẤT viết tay.
-- KHÔNG lấy số in ở cột Số lượng.
-- Ô viết tay chỉ có dấu tick → "✓". Ô chỉ có X → "X".
-- Giữ số lẻ và đơn vị viết tay: "5,5", "14 con", "1T", "10H", "5T x 24".
-- Chữ T viết tay (viết tắt của «thùng») trông RẤT GIỐNG số 7. Phải ghi là T: "1T", "4T", "10T" — TUYỆT ĐỐI không ghi thành 17, 47, 107.
-- Không tự nhân/quy đổi, chỉ chép đúng ô viết tay.
-- Ô có chữ số (kể cả mờ/khó đọc) → PHẢI ghi chữ số đó, không được bỏ. Chỉ bỏ khi ô THỰC SỰ trống.
-- Ưu tiên đọc số hơn là bỏ: nếu nghi ngờ, ghi số đọc được. KHÔNG bịa số không thấy.
-- Ô trống thực sự → bỏ STT đó.
-- Chỉ dùng STT từ 1 đến {max_stt}.{stt_hint}
+Quy tắc:
+- Chỉ đọc cột THỰC XUẤT viết tay. KHÔNG đọc tên hàng, KHÔNG đọc cột ghi chú.
+- BƯỚC 1: xác định STT dòng ĐẦU và dòng CUỐI nhìn thấy. BƯỚC 2: chỉ đọc các dòng trong khoảng đó.
+- CHỈ ghi các STT CÓ TRONG ẢNH, không ghi tiếp tới {max_stt}.
+- Ô chỉ có dấu tick → "✓". Ô chỉ có X → "X". Ô trống thực sự → bỏ STT đó.
+- Giữ đơn vị viết tay: "14 con", "5,5", "1T", "10H", "5T x 24".
+- Chữ T viết tay giống số 7 → ghi T: "1T", "4T", "10T", không ghi 17/47/107.
+- Không tự nhân/quy đổi.
+- STT nằm trong khoảng 1–{max_stt}.{stt_hint}
 
-Trả JSON thuần (không markdown):
-{{"thuc_xuat": {{"17": "10", "18": "X"}}}}"""
+Trả JSON thuần (không markdown). Ví dụ ĐỊNH DẠNG (số 999 là giả, KHÔNG chép):
+{{"stt_dau": 999, "stt_cuoi": 999, "thuc_xuat": {{"999": "ví dụ"}}}}"""
+
+STT_VISIBLE_PROMPT = """Ảnh là cột STT (số thứ tự in sẵn) ở mép trái bảng phiếu xuất kho.
+Chỉ đọc các số IN RÕ trên giấy. BỎ QUA chữ/số mờ ở mặt sau tờ giấy (nhìn như
+bóng mờ, có thể bị ngược) và watermark.
+Liệt kê các số nhìn thấy, từ trên xuống. Nếu không có số nào, trả mảng rỗng.
+
+Trả JSON thuần (không markdown): {"stt": [84]}"""
 
 OLLAMA_ASSIGN_PROMPT = """Ảnh là một trang bảng phiếu xuất kho Việt Nam.
 
@@ -102,8 +110,79 @@ def _normalize_ollama_value(value: str) -> str:
   return s
 
 
-def _parse_ollama_response(text: str, max_stt: int) -> dict[int, str]:
-  data = json.loads(_json_slice(text))
+# Từ chỉ đơn vị hay gặp trong ô «Thực xuất» (đã bỏ dấu). Từ khác dài hơn 3 chữ
+# cái mà không nằm trong danh sách này = model đọc nhầm chữ trong trang
+# (vd "Vận chuyển", "IWATSUKA") chứ không phải số lượng.
+_QTY_UNIT_WORDS = {
+  "con", "goi", "qua", "hop", "chai", "cai", "bich", "tui", "bao", "thung",
+  "loc", "cuon", "chiec", "doi", "bo", "hu", "can", "khay", "vien", "hop",
+  "thung", "kg", "g", "ml", "l", "m", "cm", "mm", "lit", "tan", "ta", "yen",
+}
+_LETTER_WORD_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
+# Chữ Nhật/Trung/Hàn không bao giờ có trong ô số lượng viết tay.
+_CJK_RE = re.compile(r"[\u3000-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uff00-\uffef\uac00-\ud7af]")
+
+
+def _looks_like_qty(value: str) -> bool:
+  """Giá trị có dạng số lượng viết tay không (số, X, ✓, kèm đơn vị ngắn).
+
+  Trang trống/nhiều chữ khiến model trả cả câu hay cả tên hàng vào ô «Thực
+  xuất»; lọc để không ghi chữ vào file kết quả và để ảnh đó được đọc lại.
+  """
+  import unicodedata
+
+  v = (value or "").strip()
+  if not v:
+    return False
+  if len(v) > 16:
+    return False
+  if _CJK_RE.search(v):
+    return False
+  plain = unicodedata.normalize("NFD", v.lower().replace("×", "x"))
+  plain = "".join(c for c in plain if unicodedata.category(c)[0] != "M")
+  for word in _LETTER_WORD_RE.findall(plain):
+    if len(word) <= 3:
+      continue
+    if word in _QTY_UNIT_WORDS:
+      continue
+    return False
+  return True
+
+
+def _is_product_name(value: str, product_name: str) -> bool:
+  """Giá trị model trả có phải tên hàng (đọc nhầm cột) chứ không phải số lượng."""
+  from difflib import SequenceMatcher
+
+  v = _norm_name(value)
+  n = _norm_name(product_name)
+  if not v or not n:
+    return False
+  if v == n or (len(v) >= 4 and v in n):
+    return True
+  return SequenceMatcher(None, v, n).ratio() >= 0.72
+
+
+def _stt_int(value: object) -> int | None:
+  """Đọc số STT model trả (có thể kèm dấu như "17.", "38)")."""
+  m = re.match(r"^\s*(\d{1,4})\s*[.)\]:\-]?\s*$", str(value or ""))
+  return int(m.group(1)) if m else None
+
+
+def _visible_stt_range(data: dict) -> tuple[int, int] | None:
+  """Khoảng STT model khai là nhìn thấy trong ảnh (stt_dau..stt_cuoi)."""
+  if not isinstance(data, dict):
+    return None
+  lo = _stt_int(data.get("stt_dau"))
+  hi = _stt_int(data.get("stt_cuoi"))
+  if lo is None or hi is None or hi < lo:
+    return None
+  return lo, hi
+
+
+def _parse_ollama_data(
+  data: object, max_stt: int
+) -> tuple[dict[int, str], tuple[int, int] | None]:
+  """Đọc JSON model đã parse → (map STT, khoảng STT nhìn thấy)."""
   raw = data.get("thuc_xuat", data) if isinstance(data, dict) else {}
   if not isinstance(raw, dict):
     raise ValueError("JSON thiếu object thuc_xuat")
@@ -113,9 +192,22 @@ def _parse_ollama_response(text: str, max_stt: int) -> dict[int, str]:
     if not (1 <= stt <= max_stt):
       continue
     norm = _normalize_ollama_value(value)
-    if norm:
+    if norm and _looks_like_qty(norm):
       out[stt] = norm
-  return out
+  rng = _visible_stt_range(data) if isinstance(data, dict) else None
+  # Model hay "đọc tiếp" các STT không có trong ảnh (bịa tới max_stt). Cắt về
+  # đúng khoảng stt_dau..stt_cuoi mà nó khai, nhưng chỉ khi phần lớn kết quả
+  # nằm trong khoảng đó (tránh cắt nhầm khi model khai khoảng sai).
+  if rng and out:
+    lo, hi = rng
+    inside = {stt: val for stt, val in out.items() if lo <= stt <= hi}
+    if inside and len(inside) >= max(1, len(out) * 0.5):
+      out = inside
+  return out, rng
+
+
+def _parse_ollama_response(text: str, max_stt: int) -> dict[int, str]:
+  return _parse_ollama_data(json.loads(_json_slice(text)), max_stt)[0]
 
 
 def _parse_ollama_order_response(
@@ -147,7 +239,7 @@ def _parse_ollama_order_response(
     if max_stt and not (1 <= stt <= max_stt):
       continue
     norm = _normalize_ollama_value(value)
-    if norm:
+    if norm and _looks_like_qty(norm):
       out[stt] = norm
   return pdn, out
 
@@ -187,6 +279,82 @@ def _maps_contiguous(maps: list[dict[int, str]]) -> bool:
   return best >= max(3, int(len(keys) * 0.5))
 
 
+def _has_far_gap(mp: dict[int, str], max_gap: int = 8) -> bool:
+  """Map có hai khối STT cách xa nhau (thường do đọc lẫn mặt sau tờ giấy)."""
+  keys = sorted(mp)
+  return any(b - a > max_gap for a, b in zip(keys, keys[1:]))
+
+
+
+def _image_scores(mp: dict[int, str]) -> dict[int, int]:
+  """Điểm tin cậy theo vị trí trong ảnh: STT càng xa mép trên/dưới càng cao.
+
+  Dòng sát mép ảnh hay bị cắt → đọc sai. Dùng điểm này để chỉ cho phép ảnh
+  sau sửa lại đúng những dòng mà ảnh trước đọc ở sát mép.
+  """
+  if not mp:
+    return {}
+  lo, hi = min(mp), max(mp)
+  return {stt: min(stt - lo, hi - stt) for stt in mp}
+
+
+def _commit_image_map(
+  merged: dict[int, str],
+  scores: dict[int, int],
+  img_map: dict[int, str],
+) -> tuple[int, int]:
+  """Chốt kết quả 1 ảnh vào kết quả tổng; trả về (số STT mới, số dòng sửa mép).
+
+  Ảnh đầu thắng: STT đã có thì giữ nguyên, ảnh sau chỉ bổ sung STT mới. Chỉ
+  cho ảnh sau sửa lại khi dòng cũ được đọc ở sát mép ảnh trước (điểm <= 1) mà
+  ảnh này thấy nó ở giữa ảnh (điểm >= 3) — đó là dòng bị cắt ở mép, không
+  phải ảnh sau đọc đè số đúng.
+  """
+  img_scores = _image_scores(img_map)
+  added = fixed = 0
+  for stt, val in img_map.items():
+    if stt not in merged:
+      merged[stt] = val
+      scores[stt] = img_scores[stt]
+      added += 1
+      continue
+    if val == merged[stt]:
+      continue
+    old = merged[stt]
+    # "X" là giá trị model rất hay bịa khi không thấy ô. Một ảnh khác đọc
+    # được chữ số/tick thật thì đáng tin hơn → cho ghi đè.
+    if old.upper() == "X" and val.upper() != "X" and (
+      img_scores[stt] >= 1 or len(img_map) <= 3
+    ):
+      merged[stt] = val
+      scores[stt] = img_scores[stt]
+      fixed += 1
+      continue
+    if old.upper() != "X" and val.upper() == "X":
+      continue  # không để X đè lên số đã đọc được
+    if scores.get(stt, 0) <= 1 and img_scores[stt] >= 3:
+      merged[stt] = val
+      scores[stt] = img_scores[stt]
+      fixed += 1
+  return added, fixed
+
+
+def _accept_image_map(new: dict[int, str], base: dict[int, str]) -> bool:
+  """Ảnh này có đáng gộp vào kết quả tổng không.
+
+  - Ảnh đầu: cần dãy STT liền mạch (tránh ảnh chụp phần cuối trang đọc loạn).
+  - Ảnh sau: nhận nếu có ít nhất 1 STT trùng với kết quả đã có (chồng lấn),
+    hoặc dãy STT liền mạch. Ảnh rời rạc và không trùng → bỏ.
+  """
+  if not new:
+    return False
+  if not base:
+    return _maps_contiguous([new])
+  if set(new) & set(base):
+    return True
+  return _maps_contiguous([new])
+
+
 def _merge_thuc_maps_weighted(maps: list[dict[int, str]]) -> dict[int, str]:
   """Gộp nhiều ảnh, ưu tiên ảnh mà STT nằm giữa trang.
 
@@ -220,14 +388,16 @@ def _ollama_band_map(
   label: str,
   cancel_event: threading.Event | None,
   min_keys: int = 1,
-) -> dict[int, str]:
-  """Đọc 1 dải ảnh → map STT. Retry khi JSON hỏng hoặc đọc được quá ít dòng."""
+) -> tuple[dict[int, str], tuple[int, int] | None]:
+  """Đọc 1 dải ảnh → (map STT, khoảng STT model khai). Retry khi JSON hỏng
+  hoặc đọc được quá ít dòng."""
   import time
 
 
   last_exc: Exception | None = None
   parsed_ok = False
   best: dict[int, str] = {}
+  best_range: tuple[int, int] | None = None
   for attempt in range(1, EMPTY_CHUNK_RETRIES + 1):
     check_cancel(cancel_event)
     if on_progress:
@@ -242,16 +412,21 @@ def _ollama_band_map(
         timeout=cfg["timeout"],
         num_ctx=cfg["num_ctx"],
         cancel_event=cancel_event,
+        keep_alive=cfg.get("keep_alive"),
       )
-      part = _parse_ollama_response(text, max_stt)
+      part, rng = _parse_ollama_data(json.loads(_json_slice(text)), max_stt)
       parsed_ok = True
       if len(part) > len(best):
-        best = part
+        best, best_range = part, rng
       if len(part) >= min_keys:
-        return part
+        return part, rng
     except CancelledByUser:
       raise
-    except OllamaError:
+    except OllamaError as exc:
+      last_exc = exc
+      if attempt < EMPTY_CHUNK_RETRIES:
+        time.sleep(2.0 * attempt)
+        continue
       raise
     except Exception as exc:  # JSON hỏng, model trả rỗng...
       last_exc = exc
@@ -259,7 +434,67 @@ def _ollama_band_map(
       time.sleep(1.0 * attempt)
   if not parsed_ok and last_exc is not None:
     raise ValueError(f"AI trả JSON không đọc được cho {label}:\n{last_exc}")
-  return best
+  return best, best_range
+
+
+def _stt_strip(data: bytes) -> bytes | None:
+  """Cắt dải STT mép trái của ảnh và tăng tương phản để xóa chữ mờ mặt sau."""
+  import cv2
+  import numpy as np
+
+  arr = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+  if arr is None:
+    return None
+  h, w = arr.shape[:2]
+  strip = arr[:, : max(1, int(w * 0.13))]
+  gray = cv2.cvtColor(strip, cv2.COLOR_BGR2GRAY)
+  enh = np.clip((gray.astype(np.float32) - 90) * (255 / 110), 0, 255).astype(
+    np.uint8
+  )
+  ok, buf = cv2.imencode(".jpg", enh, [cv2.IMWRITE_JPEG_QUALITY, 92])
+  return buf.tobytes() if ok else None
+
+
+def _read_visible_stt(
+  band,
+  max_stt: int,
+  cfg: dict,
+  on_progress,
+  label: str,
+  cancel_event: threading.Event | None,
+) -> set[int]:
+  """Đọc các STT in rõ ở mép trái ảnh (để loại STT đọc lẫn từ mặt sau)."""
+  strip = _stt_strip(band.data)
+  if not strip:
+    return set()
+  if on_progress:
+    on_progress(f"Đang xác minh STT {label}")
+  out: set[int] = set()
+  for attempt in range(1, 3):
+    try:
+      text = chat_vision(
+        STT_VISIBLE_PROMPT,
+        [strip],
+        model=cfg["model"],
+        base_url=cfg["base_url"],
+        timeout=cfg["timeout"],
+        num_ctx=cfg["num_ctx"],
+        cancel_event=cancel_event,
+        keep_alive=cfg.get("keep_alive"),
+      )
+      data = json.loads(_json_slice(text))
+    except Exception:
+      data = None
+    nums = data.get("stt") if isinstance(data, dict) else data
+    out = set()
+    for item in nums or []:
+      stt = _stt_int(item)
+      if stt is not None and 1 <= stt <= max_stt:
+        out.add(stt)
+    if out:
+      break
+  return out
+
 
 
 def _norm_name(text: str) -> str:
@@ -342,6 +577,7 @@ def _assign_pages_to_orders(
         timeout=cfg["timeout"],
         num_ctx=cfg["num_ctx"],
         cancel_event=cancel_event,
+        keep_alive=cfg.get("keep_alive"),
       )
       data = json.loads(_json_slice(text))
       names = data.get("ten") or []
@@ -425,7 +661,8 @@ def _extract_one_ollama(
   pdn = (pdn_from_excel(excel) or excel.stem).upper()
   _products = load_products(excel)
   max_stt = max((p.stt for p in _products), default=0)
-  collected: list[dict[int, str]] = []
+  merged: dict[int, str] = {}
+  merged_scores: dict[int, int] = {}
   empty_images = 0
   skipped_images = 0
   for i, img in enumerate(images, 1):
@@ -442,62 +679,164 @@ def _extract_one_ollama(
         pdn=pdn, max_stt=max_stt, stt_hint=""
       )
       label = f"{pdn} — ảnh {i}/{len(images)}: {img.name} | {band.label}"
-      part = _ollama_band_map(
-        prompt,
-        band,
-        max_stt,
-        cfg,
-        on_progress,
-        label,
-        cancel_event,
-        min_keys=5 if band.mode in ("page", "table") else 1,
-      )
-      # Cả trang mà vẫn đọc được < 5 dòng → model bị "ngợp" ảnh dài.
-      # Đọc lại bằng 2 nửa trang chồng lấn rồi gộp.
-      if band.mode in ("page", "table") and len(part) < 5:
-        sub_maps: list[dict[int, str]] = []
+      part: dict[int, str] = {}
+      part_range: tuple[int, int] | None = None
+      try:
+        part, part_range = _ollama_band_map(
+          prompt,
+          band,
+          max_stt,
+          cfg,
+          on_progress,
+          label,
+          cancel_event,
+          min_keys=5 if band.mode in ("page", "table") else 1,
+        )
+        # Cả trang mà vẫn đọc được < 5 dòng → model bị "ngợp" ảnh dài.
+        # Đọc lại bằng 2 nửa trang chồng lấn rồi gộp.
+        # Trang chỉ có đúng 1 dòng (stt_dau == stt_cuoi) thì thôi: đọc lại nửa
+        # trang dễ "nhìn" sang mặt sau tờ giấy và bịa thêm dòng.
+        single_row = bool(part_range and part_range[0] == part_range[1])
+        if band.mode in ("page", "table") and len(part) < 5 and not single_row:
+          sub_maps: list[dict[int, str]] = []
+          for j, data in enumerate(_split_band(band), 1):
+            sub, _ = _ollama_band_map(
+              prompt,
+              SimpleNamespace(data=data, mode="band"),
+              max_stt,
+              cfg,
+              on_progress,
+              f"{label} — nửa {j}",
+              cancel_event,
+              min_keys=3,
+            )
+            if sub:
+              sub_maps.append(sub)
+          alt = _merge_thuc_maps_weighted(sub_maps)
+          # Chỉ nhận kết quả nửa trang khi nó đọc cùng vùng với cả trang. Rời
+          # rạc hoàn toàn nghĩa là model đọc sang vùng khác/mặt sau → bỏ.
+          if len(alt) > len(part) and (not part or set(alt) & set(part)):
+            prog(
+              f"Đọc lại {band.label} theo nửa trang: {len(alt)} STT "
+              f"(cả trang chỉ {len(part)})"
+            )
+            part = alt
+        if part:
+          img_maps.append(part)
+      except Exception as exc:  # ảnh bị lỗi model (vd lặp token) → thử đọc theo nửa trang
+        prog(f"Cảnh báo: dải {band.label} lỗi — {exc}")
+      # Fallback: nếu cả trang lỗi/trống, thử đọc theo nửa trang.
+      if (not part) and band.mode in ("page", "table"):
+        sub_maps_fb: list[dict[int, str]] = []
         for j, data in enumerate(_split_band(band), 1):
-          sub = _ollama_band_map(
-            prompt,
-            SimpleNamespace(data=data, mode="band"),
-            max_stt,
-            cfg,
-            on_progress,
-            f"{label} — nửa {j}",
-            cancel_event,
-            min_keys=3,
-          )
+          try:
+            sub, _ = _ollama_band_map(
+              prompt,
+              SimpleNamespace(data=data, mode="band"),
+              max_stt,
+              cfg,
+              on_progress,
+              f"{label} — nửa {j}",
+              cancel_event,
+              min_keys=3,
+            )
+          except Exception as exc:
+            prog(f"Cảnh báo: nửa {j} lỗi — {exc}")
+            sub = {}
           if sub:
-            sub_maps.append(sub)
-        alt = _merge_thuc_maps_weighted(sub_maps)
-        if len(alt) > len(part):
-          prog(
-            f"Đọc lại {band.label} theo nửa trang: {len(alt)} STT "
-            f"(cả trang chỉ {len(part)})"
-          )
+            sub_maps_fb.append(sub)
+        alt = _merge_thuc_maps_weighted(sub_maps_fb)
+        if alt:
+          prog(f"Đọc lại {band.label} theo nửa trang (fallback): {len(alt)} STT")
           part = alt
-      if part:
-        img_maps.append(part)
-      seen = len(
-        {stt for mp in collected for stt in mp}
-        | {stt for mp in img_maps for stt in mp}
-      )
-      prog(f"Đã đọc {label} | đã có {seen} STT")
+          img_maps.append(part)
+    if not img_maps:
+      # Ảnh khó (trang gần trống, chỉ 1 dòng, lệch góc): thử đọc lại ảnh gốc
+      # chưa làm phẳng một lần. Chỉ chạy khi các dải đều hỏng nên hiếm khi tốn.
+      try:
+        raw_band = split_image(img, 1)[0]
+        part, _ = _ollama_band_map(
+          prompt,
+          raw_band,
+          max_stt,
+          cfg,
+          on_progress,
+          f"{pdn} — ảnh {i}/{len(images)}: {img.name} | ảnh gốc",
+          cancel_event,
+          min_keys=1,
+        )
+        if part:
+          prog(f"Đọc lại {img.name} bằng ảnh gốc: {len(part)} STT")
+          img_maps.append(part)
+      except Exception as exc:
+        prog(f"Cảnh báo: đọc lại ảnh gốc {img.name} lỗi — {exc}")
     if not img_maps:
       empty_images += 1
       prog(f"Cảnh báo: ảnh {img.name} không đọc được STT nào")
       continue
-    if _maps_contiguous(img_maps):
-      collected.extend(img_maps)
-    else:
+    # Chốt riêng từng ảnh: gộp các dải trong ảnh, rồi chỉ BỔ SUNG STT mới
+    # vào kết quả tổng. Ảnh đầu thắng — ảnh sau không ghi đè số đã đọc đúng.
+    img_map = _merge_thuc_maps_weighted(img_maps)
+    # Model đôi khi đọc nhầm sang cột tên hàng. Tên hàng của đúng STT trong
+    # Excel là căn cứ chắc chắn để loại các giá trị đó.
+    names_by_stt = {p.stt: p.name for p in _products}
+    before = len(img_map)
+    img_map = {
+      stt: val
+      for stt, val in img_map.items()
+      if not _is_product_name(val, names_by_stt.get(stt, ""))
+    }
+    if len(img_map) != before:
+      prog(
+        f"Bỏ {before - len(img_map)} dòng đọc nhầm cột tên hàng ({img.name})"
+      )
+    # Một ảnh chụp không thể chứa quá ~35 dòng. Nhiều hơn = model hallucinate STT
+    # (điền tiếp tới max_stt) → bỏ ảnh, tránh đè số đúng của trang khác.
+    if img_map and (
+      len(img_map) > 35 or (max(img_map) - min(img_map)) > 35
+    ):
+      prog(
+        f"Cảnh báo: bỏ ảnh {img.name} — đọc được {len(img_map)} STT "
+        "(vượt quá số dòng một trang, nghi model điền thêm)"
+      )
+      continue
+    # Ảnh bị cắt dải (mode "band") dễ đọc lẫn chữ mờ mặt sau; ảnh chỉ có ít dòng
+    # mà model trả nhiều STT cũng vậy. Xác minh bằng cột STT in rõ ở mép trái.
+    band_split = any(b.mode == "band" for b in bands)
+    if _has_far_gap(img_map) or (band_split and len(img_map) <= 15):
+      visible: set[int] = set()
+      for band in bands:
+        visible |= _read_visible_stt(
+          band,
+          max_stt,
+          cfg,
+          on_progress,
+          f"{img.name} | {band.label}",
+          cancel_event,
+        )
+      kept = {k: v for k, v in img_map.items() if k in visible} if visible else img_map
+      if kept != img_map:
+        prog(
+          f"Xác minh STT {img.name}: bỏ {len(img_map) - len(kept)} dòng "
+          "không thấy ở cột STT (chữ mờ mặt sau)"
+        )
+        img_map = kept
+    if not _accept_image_map(img_map, merged):
       skipped_images += 1
-      keys = sorted({stt for mp in img_maps for stt in mp})
+      keys = sorted(img_map)
       prog(
         f"Cảnh báo: bỏ kết quả ảnh {img.name} — STT rời rạc "
         f"({', '.join(str(k) for k in keys[:8])}...)"
       )
+      continue
+    added, fixed = _commit_image_map(merged, merged_scores, img_map)
+    prog(
+      f"Ảnh {i}/{len(images)} xong: {img.name} — {len(img_map)} STT "
+      f"(+{added} mới"
+      + (f", sửa {fixed} dòng sát mép" if fixed else "")
+      + f", tổng {len(merged)})"
+    )
 
-  merged = _merge_thuc_maps_weighted(collected)
   prog(
     f"Xong {pdn}: {len(merged)} STT từ {len(images)} ảnh"
     + (f" ({empty_images} ảnh trống)" if empty_images else "")
@@ -522,7 +861,7 @@ def _extract_orders_ollama(
   ordered = _sort_images(image_paths)
   prog(
     f"Ollama {cfg['model']}: {len(ordered)} ảnh, {len(excel_paths)} phiếu "
-    f"(làm phẳng trang + che cột số lượng in)..."
+    f"(làm phẳng trang + cắt cột số lượng in)..."
   )
 
   if len(excel_paths) == 1:
