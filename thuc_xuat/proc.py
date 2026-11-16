@@ -2,7 +2,7 @@
 """Chạy tiến trình con trên Windows mà KHÔNG hiện cửa sổ console.
 
 App đóng gói ở chế độ GUI (console=False). Khi một app GUI gọi tiến trình
-console con (powershell, tasklist, ollama, cmd...) mà không có cờ ẩn, Windows
+console con (powershell, tasklist, cmd...) mà không có cờ ẩn, Windows
 cấp cho tiến trình đó một cửa sổ console mới → người dùng thấy "nhấp nháy"
 một cửa sổ terminal. Mọi chỗ spawn tiến trình phải đi qua module này.
 
@@ -40,8 +40,7 @@ def _startupinfo() -> Any:
 def hidden_kwargs(detached: bool = False) -> dict[str, Any]:
   """kwargs cho Popen/run: không tạo cửa sổ console.
 
-  detached=True: tách hẳn khỏi app (app tắt tiến trình vẫn chạy) — dùng cho
-  `ollama serve`.
+  detached=True: tách hẳn khỏi app (app tắt tiến trình vẫn chạy).
   """
   if not _IS_WINDOWS:
     return {}

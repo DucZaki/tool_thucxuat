@@ -1,9 +1,7 @@
 # -*- coding: utf-8 -*-
 """Thực Xuất — xử lý ảnh phiếu kho.
 
-Không import sẵn module nặng (opencv/openpyxl) ở đây: bộ cài chỉ cần
-ollama_client/ollama_setup nên phải import nhẹ. Các tên cũ vẫn dùng được
-nhờ __getattr__ (import khi cần).
+Các công cụ xử lý ảnh và Excel được import khi cần, để bộ cài khởi động nhẹ.
 """
 from __future__ import annotations
 
@@ -28,8 +26,7 @@ _SUBMODULES = {
   "image_match",
   "image_prep",
   "io_json",
-  "ollama_client",
-  "ollama_setup",
+  "nim_client",
   "pipeline",
   "processor",
   "shell_open",

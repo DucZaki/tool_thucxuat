@@ -9,7 +9,6 @@ from pathlib import Path
 
 from thuc_xuat.cancel import CancelledByUser, check_cancel
 from thuc_xuat.image_match import pdn_from_excel
-from thuc_xuat.ollama_client import ensure_ready
 from thuc_xuat.nim_client import NimVision
 from thuc_xuat.processor import (
   OutputRow,
@@ -96,9 +95,6 @@ def process_batch_like_chat(
     raise ValueError("Có nhiều Excel trùng mã phiếu. Chỉ giữ một file Excel cho mỗi phiếu.")
 
   check_cancel(cancel_event)
-  # Tự bật Ollama (ollama serve) + kiểm tra model trước khi đọc ảnh.
-  if nim is None:
-    ensure_ready(on_status=on_progress)
   batch = BatchResult()
   order_maps = extract_orders_from_images(
     excels,
@@ -106,9 +102,9 @@ def process_batch_like_chat(
     on_progress=on_progress,
     cancel_event=cancel_event,
     on_issue=batch.warnings.append,
-    **({"nim": nim} if nim is not None else {}),
-    **({"images_by_excel": images_by_excel} if images_by_excel is not None else {}),
-    **({"resume": resume} if resume is not None else {}),
+    nim=nim,
+    images_by_excel=images_by_excel,
+    resume=resume,
   )
   if resume is not None:
     batch.pending_images = resume.pending([Path(path) for path in image_paths])

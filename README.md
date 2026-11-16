@@ -27,6 +27,7 @@ Cấu hình trong `config.json` (cạnh app):
 | Key | Mặc định | Ý nghĩa |
 |-----|----------|---------|
 | `nim_model` | `nim-auto` | Model để đọc ảnh |
+| `image_bands` | `0` | Tự chia dải ảnh theo chiều cao hoặc đặt cố định từ 1 đến 4 dải |
 | `auto_open_output` | `false` | Tự mở thư mục chứa file kết quả |
 | `output_dir` | `KetQua` | Thư mục chứa file kết quả (tương đối = cạnh app, hoặc đường dẫn tuyệt đối) |
 | `export_include_name` | `false` | `true` = file kết quả có thêm cột «Tên sản phẩm» |

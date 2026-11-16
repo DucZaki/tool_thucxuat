@@ -18,18 +18,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
   "output_dir": "KetQua",
   # True = file kết quả có thêm cột «Tên sản phẩm» để đối chiếu.
   "export_include_name": False,
-  "ollama_base_url": "http://127.0.0.1:11434",
-  "ollama_model": "gemma3:4b",
+  "nim_model": "nim-auto",
   # 0 = tự chia theo chiều cao ảnh; 1..4 = số dải cố định
-  "ollama_bands": 0,
-  "ollama_num_ctx": 8192,
-  "ollama_timeout": 180,
-  # Giữ model trong RAM bao lâu sau lần đọc cuối (tránh nạp lại giữa lô ảnh).
-  "ollama_keep_alive": "30m",
+  "image_bands": 0,
 }
 
-OLLAMA_DEFAULT_BASE_URL = "http://127.0.0.1:11434"
-OLLAMA_DEFAULT_MODEL = "gemma3:4b"
 OUTPUT_DIR_NAME = "KetQua"
 
 
@@ -47,7 +40,9 @@ def load_config() -> dict[str, Any]:
   if not isinstance(data, dict):
     return dict(DEFAULT_CONFIG)
   cfg = dict(DEFAULT_CONFIG)
-  cfg.update(data)
+  cfg.update({key: data[key] for key in DEFAULT_CONFIG if key in data})
+  if "image_bands" not in data and "ollama_bands" in data:
+    cfg["image_bands"] = data["ollama_bands"]
   return cfg
 
 
@@ -65,32 +60,12 @@ def ensure_config_file() -> None:
     pass
 
 
-def get_ollama_settings() -> dict[str, Any]:
-  """Cấu hình Ollama (local) đã chuẩn hóa."""
-  cfg = load_config()
-
-  def as_int(value: Any, default: int) -> int:
-    try:
-      return int(value)
-    except (TypeError, ValueError):
-      return default
-
-  def as_float(value: Any, default: float) -> float:
-    try:
-      return float(value)
-    except (TypeError, ValueError):
-      return default
-
-  base = str(cfg.get("ollama_base_url") or OLLAMA_DEFAULT_BASE_URL).strip()
-  return {
-    "base_url": base.rstrip("/") or OLLAMA_DEFAULT_BASE_URL,
-    "model": str(cfg.get("ollama_model") or OLLAMA_DEFAULT_MODEL).strip()
-    or OLLAMA_DEFAULT_MODEL,
-    "bands": max(0, min(4, as_int(cfg.get("ollama_bands"), 0))),
-    "num_ctx": max(2048, as_int(cfg.get("ollama_num_ctx"), 8192)),
-    "timeout": max(30.0, as_float(cfg.get("ollama_timeout"), 180.0)),
-    "keep_alive": str(cfg.get("ollama_keep_alive") or "30m").strip() or "30m",
-  }
+def image_band_count() -> int:
+  """0 để tự chia dải ảnh, 1–4 để chọn số dải cố định."""
+  try:
+    return max(0, min(4, int(load_config()["image_bands"])))
+  except (TypeError, ValueError, OverflowError):
+    return 0
 
 
 def auto_open_output_folder() -> bool:

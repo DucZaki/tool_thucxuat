@@ -9,8 +9,8 @@ from thuc_xuat.vision_extract import (
   _commit_image_map,
   _looks_like_qty,
   _maps_contiguous,
-  _normalize_ollama_value,
-  _parse_ollama_response,
+  _normalize_ocr_value,
+  _parse_ocr_response,
 )
 
 
@@ -18,15 +18,15 @@ class NormalizeValueTests(unittest.TestCase):
   def test_y_read_for_x_becomes_x(self):
     # Phiếu không có chữ Y: nét gạch chéo X bị đọc thành Y → phải là "X".
     for value in ("Y", "y", "5 Y", "10y", "X", "x", "5 X"):
-      self.assertEqual(_normalize_ollama_value(value), "X", value)
+      self.assertEqual(_normalize_ocr_value(value), "X", value)
 
   def test_numbers_untouched(self):
     for value in ("10", "1T", "5T x 24", "10H"):
-      self.assertEqual(_normalize_ollama_value(value), value)
+      self.assertEqual(_normalize_ocr_value(value), value)
 
   def test_tick_like_marks_from_ocr_become_x(self):
     for value in ("✓", "✔.", "v", "V", ">", "/", "√", "10 ✓", "5✔️"):
-      self.assertEqual(_normalize_ollama_value(value), "X")
+      self.assertEqual(_normalize_ocr_value(value), "X")
 
 
 class LooksLikeQtyTests(unittest.TestCase):
@@ -46,27 +46,27 @@ class LooksLikeQtyTests(unittest.TestCase):
       '{"stt_dau": 1, "stt_cuoi": 3, '
       '"thuc_xuat": {"1": "Vận chuyển", "2": "10", "3": "IWATSUKA(Nagoya)"}}'
     )
-    self.assertEqual(_parse_ollama_response(text, 186), {2: "10"})
+    self.assertEqual(_parse_ocr_response(text, 186), {2: "10"})
 
 
-class ParseOllamaRangeTests(unittest.TestCase):
+class ParseOcrRangeTests(unittest.TestCase):
   def test_clamps_extrapolated_rows(self):
     text = (
       '{"stt_dau": 17, "stt_cuoi": 38, '
       '"thuc_xuat": {"17": "10", "38": "10H", "39": "X", "186": "X"}}'
     )
-    self.assertEqual(sorted(_parse_ollama_response(text, 186)), [17, 38])
+    self.assertEqual(sorted(_parse_ocr_response(text, 186)), [17, 38])
 
   def test_no_range_keeps_all(self):
     text = '{"thuc_xuat": {"1": "5", "2": "X"}}'
-    self.assertEqual(sorted(_parse_ollama_response(text, 186)), [1, 2])
+    self.assertEqual(sorted(_parse_ocr_response(text, 186)), [1, 2])
 
   def test_bad_range_ignored_when_keys_outside(self):
     text = (
       '{"stt_dau": 1, "stt_cuoi": 1, '
       '"thuc_xuat": {"17": "10", "18": "X", "19": "5"}}'
     )
-    self.assertEqual(sorted(_parse_ollama_response(text, 186)), [17, 18, 19])
+    self.assertEqual(sorted(_parse_ocr_response(text, 186)), [17, 18, 19])
 
 
 class AcceptImageMapTests(unittest.TestCase):
@@ -212,79 +212,6 @@ class SplitBandTests(unittest.TestCase):
     for part in parts:
       img = cv2.imdecode(np.frombuffer(part, np.uint8), cv2.IMREAD_COLOR)
       self.assertIsNotNone(img)
-
-
-class MaskBetweenLinesTests(unittest.TestCase):
-  def setUp(self):
-    try:
-      import numpy  # noqa: F401
-    except ImportError:
-      self.skipTest("chưa cài numpy")
-    try:
-      import cv2  # noqa: F401
-    except ImportError:
-      self.skipTest("chưa cài opencv")
-
-  def test_masks_printed_column_leftmost_narrow(self):
-    import numpy as np
-
-    from thuc_xuat.image_prep import _mask_between_lines
-
-    img = np.full((100, 1000, 3), 128, dtype=np.uint8)
-    lines = [50, 60, 300, 720, 800, 900, 990]
-    out, ok = _mask_between_lines(img, lines)
-    self.assertTrue(ok)
-    self.assertEqual(tuple(out[50, 760]), (255, 255, 255))
-    self.assertEqual(tuple(out[50, 300]), (128, 128, 128))
-    self.assertEqual(tuple(out[50, 950]), (128, 128, 128))
-
-  def test_skips_wide_columns(self):
-    import numpy as np
-
-    from thuc_xuat.image_prep import _mask_between_lines
-
-    img = np.full((100, 1000, 3), 128, dtype=np.uint8)
-    # Không có cột hẹp nào ở nửa phải → không che.
-    out, ok = _mask_between_lines(img, [50, 300, 700, 990])
-    self.assertFalse(ok)
-    self.assertTrue((out == 128).all())
-
-
-class PrintedColumnBoundsTests(unittest.TestCase):
-  def setUp(self):
-    try:
-      import numpy  # noqa: F401
-    except ImportError:
-      self.skipTest("chưa cài numpy")
-
-  def _blank(self, width: int = 1000):
-    import numpy as np
-
-    return np.full((400, width, 3), 255, dtype=np.uint8)
-
-  def test_finds_printed_column_of_digits(self):
-    from thuc_xuat.image_prep import _printed_column_bounds
-
-    img = self._blank()
-    # cột in: 20 chữ số nhỏ, đều mọi dòng
-    for i in range(20):
-      y = 20 + i * 18
-      img[y : y + 12, 700:715] = 0
-    # cột viết tay: ít ô hơn, nét lớn hơn, nằm bên phải
-    for i in range(10):
-      y = 20 + i * 36
-      img[y : y + 20, 850:890] = 0
-    bounds = _printed_column_bounds(img)
-    self.assertIsNotNone(bounds)
-    left, right = bounds
-    self.assertLessEqual(left, 700)
-    self.assertGreaterEqual(right, 715)
-    self.assertLess(right, 800)
-
-  def test_blank_image_returns_none(self):
-    from thuc_xuat.image_prep import _printed_column_bounds
-
-    self.assertIsNone(_printed_column_bounds(self._blank()))
 
 
 class FarGapTests(unittest.TestCase):

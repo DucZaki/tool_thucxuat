@@ -2,5 +2,6 @@
   "auto_open_output": false,
   "output_dir": "KetQua",
   "export_include_name": false,
-  "nim_model": "nim-auto"
+  "nim_model": "nim-auto",
+  "image_bands": 0
 }

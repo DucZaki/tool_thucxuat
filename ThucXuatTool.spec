@@ -1,11 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller spec — chạy: py -3.12 -m PyInstaller ThucXuatTool.spec"""
-from PyInstaller.utils.hooks import collect_all
-
-block_cipher = None
-
-datas = []
-binaries = []
 hiddenimports = [
   "tkinter",
   "tkinter.ttk",
@@ -20,17 +14,11 @@ hiddenimports = [
   "numpy",
 ]
 
-for pkg in ("certifi", "cv2", "numpy"):
-  tmp = collect_all(pkg)
-  datas += tmp[0]
-  binaries += tmp[1]
-  hiddenimports += tmp[2]
-
 a = Analysis(
   ["app.py"],
   pathex=[],
-  binaries=binaries,
-  datas=datas,
+  binaries=[],
+  datas=[],
   hiddenimports=hiddenimports,
   hookspath=[],
   hooksconfig={},
@@ -39,7 +27,7 @@ a = Analysis(
   noarchive=False,
   optimize=0,
 )
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+pyz = PYZ(a.pure)
 
 exe = EXE(
   pyz,

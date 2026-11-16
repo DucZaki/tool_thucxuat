@@ -208,7 +208,7 @@ class PipelineTests(unittest.TestCase):
         ],
       )
       fake = {"PDN099999": {1: "10", 2: "X", 3: "✓"}}
-      with patch("thuc_xuat.pipeline.ensure_ready"), patch(
+      with patch(
         "thuc_xuat.pipeline.extract_orders_from_images", return_value=fake
       ):
         batch = process_batch_like_chat([src], [Path(tmp) / "fake.jpg"])
@@ -235,7 +235,7 @@ class PipelineTests(unittest.TestCase):
       _write_source_excel(src, [("SP900", "Bánh", 4)])
       out_dir = Path(tmp) / "KetQua"
       fake = {"PDN033333": {1: "2"}}
-      with patch("thuc_xuat.pipeline.ensure_ready"), patch(
+      with patch(
         "thuc_xuat.pipeline.extract_orders_from_images", return_value=fake
       ):
         batch = process_batch_like_chat(
@@ -264,7 +264,7 @@ class PipelineTests(unittest.TestCase):
         "PDN111111": {1: "1"},
         "PDN222222": {1: "2"},
       }
-      with patch("thuc_xuat.pipeline.ensure_ready"), patch(
+      with patch(
         "thuc_xuat.pipeline.extract_orders_from_images", return_value=fake
       ):
         batch = process_batch_like_chat([src1, src2], ["a.jpg"])

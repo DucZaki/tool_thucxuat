@@ -1,12 +1,14 @@
 """Hồi quy NVIDIA NIM: đọc ảnh, dự phòng và xuất Excel."""
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from openpyxl import Workbook, load_workbook
 
+from thuc_xuat.cancel import CancelledByUser
 from thuc_xuat.image_prep import ImageBand
 from thuc_xuat.nim_client import CHAT_URL, NANO_OMNI, SUPER_VL, NimError, NimVision
 from thuc_xuat.pipeline import process_batch_like_chat
@@ -34,7 +36,6 @@ class NimPipelineTests(unittest.TestCase):
   def run_batch(self, response):
     model = SUPER_VL
     with (
-      patch("thuc_xuat.pipeline.ensure_ready") as local,
       patch("thuc_xuat.vision_extract.prepare_page", return_value=[self.band]),
       patch("thuc_xuat.nim_client.requests.post") as post,
     ):
@@ -45,7 +46,6 @@ class NimPipelineTests(unittest.TestCase):
           nim=NimVision(model, "nvapi-test"),
         )
       finally:
-        local.assert_not_called()
         post.assert_called_once()
         self.assertEqual(post.call_args.args[0], CHAT_URL)
         payload = post.call_args.kwargs["json"]
@@ -110,6 +110,23 @@ class NimPipelineTests(unittest.TestCase):
       post.return_value.__enter__.return_value = limited
       with self.assertRaisesRegex(NimError, "429"):
         client.read("ocr", [self.band.data])
+      post.assert_called_once()
+
+  def test_cancel_during_stream_stops_ocr(self):
+    cancel = threading.Event()
+
+    def lines():
+      yield b'data: {"choices":[{"delta":{"content":"{"}}]}'
+      cancel.set()
+      yield b"data: [DONE]"
+
+    response = MagicMock(status_code=200)
+    response.iter_lines.return_value = lines()
+    client = NimVision(SUPER_VL, "nvapi-test")
+    with patch("thuc_xuat.nim_client.requests.post") as post:
+      post.return_value.__enter__.return_value = response
+      with self.assertRaises(CancelledByUser):
+        client.read("ocr", [self.band.data], cancel_event=cancel)
       post.assert_called_once()
 
   def test_two_explicit_image_groups_export_separately_without_assignment_calls(self):

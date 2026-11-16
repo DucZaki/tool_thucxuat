@@ -1,12 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Chuẩn bị ảnh cho model vision local.
+"""Chuẩn bị ảnh cho model NVIDIA NIM.
 
-gemma3:4b nhìn ảnh ở độ phân giải thấp (~896px), nên ảnh chụp cả trang A4
-thì chữ viết tay rất nhỏ. Cách hiệu quả nhất (đã đo trên phiếu thật):
-1. Tìm khung bảng trên ảnh, làm phẳng (perspective transform) về hình chữ nhật.
-2. Che trắng cột "Số lượng" in sẵn — model 4b hay đọc nhầm cột này thay vì
-   cột "Thực Xuất" viết tay.
-3. Không tìm được bảng thì làm phẳng cả tờ giấy; vẫn không được thì cắt dải.
+Làm phẳng bảng hoặc cả tờ giấy để model dễ đọc chữ viết tay.
+Che cột Số lượng và Ghi chú khi nhận ra bố cục, rồi cắt dải khi cần.
 """
 from __future__ import annotations
 
@@ -28,10 +24,6 @@ OVERLAP_RATIO = 0.10  # chồng lấn mỗi bên, tính theo chiều cao 1 dải
 # Làm phẳng cả tờ giấy: A4 dọc.
 PAGE_WIDTH = 1240
 PAGE_HEIGHT = 1754
-# Vị trí cột "Số lượng" in trên tờ giấy đã làm phẳng (đo trên mẫu phiếu thật).
-PAGE_MASK_X = (0.655, 0.775)
-PAGE_MASK_Y0 = 0.10
-
 # Làm phẳng riêng khung bảng.
 TABLE_WIDTH = 1400
 
@@ -201,65 +193,6 @@ def _column_lines(img) -> list[int]:
   return xs
 
 
-def _digit_columns(img) -> list[float]:
-  """Tâm x của các «chữ số» nhỏ ở nửa phải bảng, sau khi bỏ đường kẻ.
-
-  Cột «Số lượng» in là cụm chữ số dày nhất và đều trên mọi dòng; cột viết tay
-  nằm bên phải nó. Dò theo cụm chữ số ổn định hơn dò theo đường kẻ (đường kẻ
-  hay bị watermark/lề làm lệch).
-  """
-  import cv2
-  import numpy as np
-
-  h, w = img.shape[:2]
-  gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-  bw = ((gray < 125) * 255).astype(np.uint8)
-  bw[: int(h * 0.10)] = 0
-  bw[int(h * 0.93) :] = 0
-  hor = cv2.morphologyEx(
-    bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (40, 1))
-  )
-  ver = cv2.morphologyEx(
-    bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, 40))
-  )
-  txt = cv2.subtract(bw, cv2.bitwise_or(hor, ver))
-  n, _lab, stats, cent = cv2.connectedComponentsWithStats(txt, 8)
-  out: list[float] = []
-  for i in range(1, n):
-    x, _y, ww, hh, area = stats[i]
-    if 15 <= area <= 1200 and 8 <= hh <= 60 and 3 <= ww <= 50 and x > w * 0.5:
-      out.append(float(cent[i][0]))
-  return out
-
-
-def _printed_column_bounds(img) -> tuple[int, int] | None:
-  """Tìm (trái, phải) của cột «Số lượng» in để cắt bỏ.
-
-  Lấy cụm chữ số có mật độ cao nhất ở nửa phải (cột in có số trên mọi dòng),
-  rồi mở rộng quanh cụm đó. Không chắc thì trả None — thà không cắt còn hơn
-  cắt lấn sang cột viết tay.
-  """
-  import numpy as np
-
-  width = img.shape[1]
-  centers = _digit_columns(img)
-  if len(centers) < 6:
-    return None
-  hist, edges = np.histogram(centers, bins=np.arange(0, width + 10, 10))
-  peak = int(np.argmax(hist))
-  if hist[peak] < 4:
-    return None
-  peak_x = float(edges[peak]) + 5.0
-  near = [x for x in centers if abs(x - peak_x) <= 45.0]
-  if len(near) < 4:
-    return None
-  left = max(4, int(min(near)) - 18)
-  right = min(width - 4, int(max(near)) + 18)
-  if right - left < 30 or right - left > 190:
-    return None
-  return left, right
-
-
 def _mask_ocr_columns(img):
   """Che Số lượng đặt và Ghi chú nếu nhận ra đủ đường kẻ của mẫu phiếu."""
   width = img.shape[1]
@@ -287,77 +220,6 @@ def _mask_ocr_columns(img):
   out[:, ordered_left + 3:shipped_left - 2] = 255
   out[:, note_left + 3:table_right - 2] = 255
   return out
-
-
-def _mask_printed_column(img):
-  """Che cột "Số lượng" in sẵn trên ảnh bảng đã làm phẳng (đường kẻ thẳng đứng)."""
-  return _mask_between_lines(img, _column_lines(img))
-
-
-def _hough_column_lines(img) -> list[int]:
-  """Đường kẻ dọc trên ảnh cả trang (hơi nghiêng) — dùng Hough thay vì chiếu cột."""
-  import cv2
-  import numpy as np
-
-  h, _ = img.shape[:2]
-  gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-  edges = cv2.Canny(gray, 50, 150)
-  lines = cv2.HoughLinesP(
-    edges,
-    1,
-    np.pi / 360,
-    threshold=120,
-    minLineLength=int(h * 0.18),
-    maxLineGap=int(h * 0.02),
-  )
-  if lines is None:
-    return []
-  items: list[tuple[float, int, int]] = []
-  for item in lines:
-    seg = np.asarray(item).reshape(-1)
-    x1, y1, x2, y2 = (int(v) for v in seg[:4])
-    dy = y2 - y1
-    dx = x2 - x1
-    if abs(dy) < h * 0.15:
-      continue
-    if abs(dx) > abs(dy) * 0.18:
-      continue
-    items.append(((x1 + x2) / 2.0, min(y1, y2), max(y1, y2)))
-  items.sort()
-  clusters: list[tuple[float, int, int]] = []
-  for xm, ylo, yhi in items:
-    if clusters and abs(xm - clusters[-1][0]) <= 18:
-      cx, lo, hi = clusters[-1]
-      clusters[-1] = ((cx + xm) / 2.0, min(lo, ylo), max(hi, yhi))
-    else:
-      clusters.append((xm, ylo, yhi))
-  # Nét chữ (dấu tick, nét bút) chỉ cao vài chục px; đường kẻ bảng chạy gần hết trang.
-  clusters = [c for c in clusters if (c[2] - c[1]) >= h * 0.40]
-  clusters.sort(key=lambda c: c[0])
-  return [int(round(c[0])) for c in clusters]
-
-
-def _mask_between_lines(img, lines: list[int]):
-  """Che cột in ngay TRƯỚC cột viết tay.
-
-  Cột "Số lượng" in là cột hẹp (2–10% bề rộng trang) nằm ở nửa phải, ngay
-  trước cột "Thực xuất". Chọn khoảng hẹp nhất/trái nhất trong nửa phải để
-  không phụ thuộc số cột của từng mẫu phiếu (có mẫu thêm cột ĐVT).
-  """
-  import cv2
-
-  width = img.shape[1]
-  pairs = [
-    (left, right)
-    for left, right in zip(lines, lines[1:])
-    if left >= 0.55 * width and 0.02 * width <= right - left <= 0.10 * width
-  ]
-  if not pairs:
-    return img, False
-  left, right = pairs[0]
-  out = img.copy()
-  cv2.rectangle(out, (left, 0), (right, img.shape[0]), (255, 255, 255), -1)
-  return out, True
 
 
 def _band_from_bgr(img, mode: str) -> ImageBand:

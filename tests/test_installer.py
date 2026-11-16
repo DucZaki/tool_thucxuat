@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Bộ cài: giải nén payload, giữ dữ liệu người dùng, tải Ollama."""
+"""Regression coverage for the Windows installer."""
 from __future__ import annotations
 
 import os
@@ -11,28 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import installer
-from thuc_xuat import ollama_setup
 from thuc_xuat.cancel import CancelledByUser
-
-
-class FakeStream:
-  def __init__(self, chunks, headers=None, status=200):
-    self._chunks = chunks
-    self.headers = headers or {"Content-Length": str(sum(len(c) for c in chunks))}
-    self.status_code = status
-
-  def raise_for_status(self):
-    if self.status_code >= 400:
-      raise RuntimeError(f"HTTP {self.status_code}")
-
-  def iter_content(self, size):
-    yield from self._chunks
-
-  def __enter__(self):
-    return self
-
-  def __exit__(self, *exc):
-    return False
 
 
 class ExtractPayloadTests(unittest.TestCase):
@@ -94,45 +73,6 @@ class PathTests(unittest.TestCase):
         installer.install_dir(),
         Path(r"C:\Users\demo\AppData\Local") / "Programs" / "ThucXuatTool",
       )
-
-
-class OllamaSetupTests(unittest.TestCase):
-  def test_download_reports_progress(self):
-    seen: list[tuple[int, int]] = []
-    with tempfile.TemporaryDirectory() as tmp:
-      dest = Path(tmp) / "OllamaSetup.exe"
-      chunks = [b"a" * 10, b"b" * 10]
-      with patch.object(
-        ollama_setup.requests, "get", return_value=FakeStream(chunks)
-      ):
-        ollama_setup.download_setup(
-          dest, on_progress=lambda done, total: seen.append((done, total))
-        )
-      self.assertEqual(dest.read_bytes(), b"a" * 10 + b"b" * 10)
-    self.assertEqual(seen[-1], (20, 20))
-
-  def test_download_honours_cancel(self):
-    event = threading.Event()
-    event.set()
-    with tempfile.TemporaryDirectory() as tmp:
-      with patch.object(
-        ollama_setup.requests, "get", return_value=FakeStream([b"x"])
-      ):
-        with self.assertRaises(CancelledByUser):
-          ollama_setup.download_setup(Path(tmp) / "x.exe", cancel_event=event)
-
-  def test_install_returns_exe_found(self):
-    with tempfile.TemporaryDirectory() as tmp:
-      setup = Path(tmp) / "OllamaSetup.exe"
-      setup.write_bytes(b"stub")
-      with patch.object(ollama_setup, "run") as run, patch.object(
-        ollama_setup, "find_ollama_exe", return_value=r"C:\Ollama\ollama.exe"
-      ):
-        exe = ollama_setup.install(setup)
-      self.assertEqual(exe, r"C:\Ollama\ollama.exe")
-      run.assert_called_once()
-      args = run.call_args[0][0]
-      self.assertIn("/VERYSILENT", args)
 
 
 if __name__ == "__main__":
