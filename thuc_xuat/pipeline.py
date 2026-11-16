@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Luồng chính: Excel + ảnh → file kết quả (Ollama local)."""
+"""Luồng chính: Excel + ảnh → file kết quả."""
 from __future__ import annotations
 
 import threading
@@ -10,6 +10,7 @@ from pathlib import Path
 from thuc_xuat.cancel import CancelledByUser, check_cancel
 from thuc_xuat.image_match import pdn_from_excel
 from thuc_xuat.ollama_client import ensure_ready
+from thuc_xuat.nim_client import NimVision
 from thuc_xuat.processor import (
   OutputRow,
   build_output,
@@ -17,7 +18,7 @@ from thuc_xuat.processor import (
   load_products,
   save_output,
 )
-from thuc_xuat.vision_extract import extract_orders_from_images
+from thuc_xuat.vision_extract import VisionResume, extract_orders_from_images
 
 
 @dataclass
@@ -36,6 +37,8 @@ class ProcessResult:
 class BatchResult:
   results: list[ProcessResult] = field(default_factory=list)
   errors: list[tuple[Path, str]] = field(default_factory=list)
+  warnings: list[str] = field(default_factory=list)
+  pending_images: list[Path] = field(default_factory=list)
 
   @property
   def ok_count(self) -> int:
@@ -69,6 +72,11 @@ def process_batch_like_chat(
   cancel_event: threading.Event | None = None,
   output_dir: str | Path | None = None,
   include_name: bool = False,
+  *,
+  nim: NimVision | None = None,
+  images_by_excel: dict[Path, list[Path]] | None = None,
+  resume: VisionResume | None = None,
+  manual_edits: dict[Path, dict[int, str | None]] | None = None,
 ) -> BatchResult:
   """
   User đưa tất cả Excel + ảnh → AI đọc → xuất file kết quả cho từng phiếu.
@@ -76,24 +84,35 @@ def process_batch_like_chat(
   output_path: chỉ dùng khi có đúng 1 Excel (ghi đè vị trí mặc định).
   output_dir: thư mục chứa file kết quả; None = cùng thư mục Excel gốc.
   include_name: True = file kết quả có thêm cột «Tên sản phẩm».
+  images_by_excel: nhóm ảnh do người dùng xác nhận, bỏ qua bước đoán phiếu.
   """
   excels = [Path(p) for p in source_excels]
   if not excels:
     raise ValueError("Chưa có file Excel.")
   if not image_paths:
     raise ValueError("Chưa có ảnh phiếu.")
+  keys = [(pdn_from_excel(src) or src.stem).upper() for src in excels]
+  if len(keys) != len(set(keys)):
+    raise ValueError("Có nhiều Excel trùng mã phiếu. Chỉ giữ một file Excel cho mỗi phiếu.")
 
   check_cancel(cancel_event)
   # Tự bật Ollama (ollama serve) + kiểm tra model trước khi đọc ảnh.
-  ensure_ready(on_status=on_progress)
+  if nim is None:
+    ensure_ready(on_status=on_progress)
+  batch = BatchResult()
   order_maps = extract_orders_from_images(
     excels,
     image_paths,
     on_progress=on_progress,
     cancel_event=cancel_event,
+    on_issue=batch.warnings.append,
+    **({"nim": nim} if nim is not None else {}),
+    **({"images_by_excel": images_by_excel} if images_by_excel is not None else {}),
+    **({"resume": resume} if resume is not None else {}),
   )
+  if resume is not None:
+    batch.pending_images = resume.pending([Path(path) for path in image_paths])
 
-  batch = BatchResult()
   for src in excels:
     try:
       check_cancel(cancel_event)
@@ -103,12 +122,26 @@ def process_batch_like_chat(
       products = load_products(src)
       if not products:
         raise ValueError("File Excel không có sản phẩm.")
-      thuc_xuat_map = _lookup_thuc_map(order_maps, pdn_from_excel(src))
+      thuc_xuat_map = _lookup_thuc_map(order_maps, pdn)
       if not thuc_xuat_map:
+        if images_by_excel is not None:
+          names = ", ".join(path.name for path in images_by_excel[src][:4])
+          raise ValueError(
+            f"Không đọc được STT trên {len(images_by_excel[src])} ảnh đã gán cho {pdn}.\n"
+            f"Ảnh: {names}. Kiểm tra cột STT và cột Thực xuất trên các ảnh này."
+          )
+        if pdn.upper() not in order_maps and len(excels) > 1:
+          raise ValueError(f"Không xác định được ảnh nào thuộc {pdn}. Kiểm tra ảnh chụp đầu trang và tên hàng.")
         raise ValueError(
           f"AI không đọc được STT nào cho {pdn}.\n"
           "Kiểm tra ảnh có đúng phiếu và mã PDN trên phiếu."
         )
+      thuc_xuat_map = dict(thuc_xuat_map)
+      for stt, raw in (manual_edits or {}).get(src, {}).items():
+        if raw is None:
+          thuc_xuat_map.pop(stt, None)
+        else:
+          thuc_xuat_map[stt] = raw
       included, skipped = build_output(products, thuc_xuat_map)
       if output_path and len(excels) == 1:
         out = Path(output_path)

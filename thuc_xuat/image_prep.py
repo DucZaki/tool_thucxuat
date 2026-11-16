@@ -43,10 +43,12 @@ class ImageBand:
   total: int
   width: int
   height: int
-  mode: str = "band"  # "band" | "page" | "table"
+  mode: str = "band"  # "band" | "page" | "table" | "short_table"
 
   @property
   def label(self) -> str:
+    if self.mode == "short_table":
+      return "bảng ngắn"
     if self.mode == "table":
       return "cả bảng"
     if self.mode == "page":
@@ -258,19 +260,33 @@ def _printed_column_bounds(img) -> tuple[int, int] | None:
   return left, right
 
 
-def _crop_printed_column(img):
-  """Cắt hẳn cột «Số lượng» in khỏi ảnh, không che trắng.
-
-  Cắt bỏ (thay vì che trắng) để không còn số in làm model đọc nhầm, và mép
-  cắt trùng đường kẻ nên không cắt mất chữ số viết tay đầu tiên.
-  """
-  import numpy as np
-
-  bounds = _printed_column_bounds(img)
-  if bounds is None:
+def _mask_ocr_columns(img):
+  """Che Số lượng đặt và Ghi chú nếu nhận ra đủ đường kẻ của mẫu phiếu."""
+  width = img.shape[1]
+  lines = _column_lines(img)
+  if len(lines) < 6:
     return img
-  left, right = bounds
-  return np.hstack([img[:, :left], img[:, right:]])
+  ordered_left, shipped_left, note_left, table_right = lines[-4:]
+  # Phải thấy cả ô STT hẹp và vùng tên hàng ở trái; viền giấy/đường chữ
+  # ở nửa phải riêng lẻ không đủ để suy ra vị trí Ghi chú.
+  has_stt = any(
+    left <= 0.18 * width and 0.02 * width <= right - left <= 0.13 * width
+    for left, right in zip(lines[:-4], lines[1:-4])
+  )
+  if not (
+    has_stt
+    and ordered_left >= 0.48 * width
+    and table_right >= 0.88 * width
+    and 0.025 * width <= shipped_left - ordered_left <= 0.14 * width
+    and 0.035 * width <= note_left - shipped_left <= 0.24 * width
+    and 0.025 * width <= table_right - note_left <= 0.20 * width
+  ):
+    # Giữ toàn bộ ảnh khi bố cục không rõ để tránh che nhầm Thực xuất.
+    return img
+  out = img.copy()
+  out[:, ordered_left + 3:shipped_left - 2] = 255
+  out[:, note_left + 3:table_right - 2] = 255
+  return out
 
 
 def _mask_printed_column(img):
@@ -364,10 +380,58 @@ def warp_available() -> bool:
   return True
 
 
-def prepare_page(path: str | Path, bands: int = 0, allow_table: bool = True) -> list[ImageBand]:
-  """Ảnh 1 trang → 1 ảnh đã làm phẳng + cắt cột số lượng in.
+def _short_table(image) -> ImageBand | None:
+  """Nhận bảng ngắn gần đầu ảnh nếu nhìn thấy đúng các vạch chia năm cột."""
+  import cv2
+  import numpy as np
 
-  Thứ tự thử: khung bảng (chính xác nhất) → cả tờ giấy (che theo tỉ lệ) →
+  region = image[:int(image.shape[0] * 0.57)]
+  if region.shape[0] < 40 or region.shape[1] < 200:
+    return None
+  quad = _find_quad(region, 0.007, 0.12, 6, 26)
+  if quad is None:
+    return None
+  table = _warp(region, quad, TABLE_WIDTH, 110)
+  gray = cv2.cvtColor(table, cv2.COLOR_BGR2GRAY)
+  dark = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 31, 3)
+  rules = cv2.morphologyEx(dark, cv2.MORPH_OPEN, np.ones((50, 1), np.uint8))
+  xs = np.flatnonzero(rules.max(axis=0))
+  clusters = np.split(xs, np.where(np.diff(xs) > 7)[0] + 1)
+  inner = [int(np.median(c)) for c in clusters if c.size and 12 < np.median(c) < TABLE_WIDTH - 12]
+  if len(inner) != 4:
+    return None
+  stt_right, ordered_left, shipped_left, note_left = inner
+  if not (
+    0.025 * TABLE_WIDTH < stt_right < 0.14 * TABLE_WIDTH
+    and 0.49 * TABLE_WIDTH < ordered_left < 0.78 * TABLE_WIDTH
+    and 0.035 * TABLE_WIDTH < shipped_left - ordered_left < 0.15 * TABLE_WIDTH
+    and 0.045 * TABLE_WIDTH < note_left - shipped_left < 0.22 * TABLE_WIDTH
+    and 0.025 * TABLE_WIDTH < TABLE_WIDTH - note_left < 0.18 * TABLE_WIDTH
+  ):
+    return None
+  table[:, ordered_left + 3:shipped_left - 2] = 255
+  table[:, note_left + 3:TABLE_WIDTH - 3] = 255
+  return _band_from_bgr(table, "short_table")
+
+
+def prepare_assignment_focus(path: str | Path) -> ImageBand:
+  """Đọc cận phần có mã phiếu/dòng đầu; ưu tiên crop bảng ngắn đã xác minh."""
+  image = _load(path)
+  if warp_available():
+    import numpy as np
+
+    short = _short_table(np.array(image)[:, :, ::-1].copy())
+    if short is not None:
+      return short
+  width, height = image.size
+  top = _resize_for_model(image.crop((0, 0, width, max(1, round(height * 0.54)))))
+  return ImageBand(data=_encode(top), index=1, total=1, width=top.width, height=top.height)
+
+
+def prepare_page(path: str | Path, bands: int = 0, allow_table: bool = True) -> list[ImageBand]:
+  """Ảnh 1 trang → ảnh đã làm phẳng, che cột đặt/ghi chú khi dò rõ bố cục.
+
+  Thứ tự thử: khung bảng (chính xác nhất) → cả tờ giấy →
   cắt dải như cũ (khi không thấy cả bảng lẫn tờ giấy).
 
   allow_table=False: không cắt riêng khung bảng (giữ header/PDN cho ảnh nhiều phiếu).
@@ -387,15 +451,17 @@ def prepare_page(path: str | Path, bands: int = 0, allow_table: bool = True) -> 
     if quad is not None:
       _, _, bw, bh = cv2.boundingRect(quad)
       table = _warp(bgr, quad, TABLE_WIDTH, max(200, int(TABLE_WIDTH * bh / bw)))
-      cropped = _crop_printed_column(table)
-      return [_band_from_bgr(cropped, "table")]
+      return [_band_from_bgr(_mask_ocr_columns(table), "table")]
 
-  # 2) Cả tờ giấy: cắt cột số lượng in (dò đường kẻ dọc, không dùng tỉ lệ cố định).
+    short = _short_table(bgr)
+    if short is not None:
+      return [short]
+
+  # 2) Cả tờ giấy: chỉ che nếu dò được đủ đường kẻ của mẫu.
   quad = _find_quad(bgr, 0.18, 0.98, 0.3, 3.5)
   if quad is not None:
     page = _warp(bgr, quad, PAGE_WIDTH, PAGE_HEIGHT)
-    cropped = _crop_printed_column(page)
-    return [_band_from_bgr(cropped, "page")]
+    return [_band_from_bgr(_mask_ocr_columns(page), "page")]
 
   # 3) Không thấy giấy/bảng → cắt dải như cũ.
   return split_image(path, bands)

@@ -58,6 +58,6 @@ echo   Thu muc:      %OUT%
 echo   File zip:     %ZIP%              ^(cho tu cap nhat / chay truc tiep^)
 echo   Bo cai:       dist\ThucXuatTool-Setup.exe  ^(gui nguoi dung moi^)
 echo.
-echo Nguoi dung moi: chay ThucXuatTool-Setup.exe — tu cai Ollama + model.
+echo Nguoi dung moi: chay ThucXuatTool-Setup.exe, sau do nhap API key NVIDIA.
 echo Ban cu: app tu hien nut «Cap nhat» khi mo.
 pause

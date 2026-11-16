@@ -21,8 +21,12 @@ class NormalizeValueTests(unittest.TestCase):
       self.assertEqual(_normalize_ollama_value(value), "X", value)
 
   def test_numbers_untouched(self):
-    for value in ("10", "1T", "5T x 24", "10H", "✓"):
+    for value in ("10", "1T", "5T x 24", "10H"):
       self.assertEqual(_normalize_ollama_value(value), value)
+
+  def test_tick_like_marks_from_ocr_become_x(self):
+    for value in ("✓", "✔.", "v", "V", ">", "/", "√", "10 ✓", "5✔️"):
+      self.assertEqual(_normalize_ollama_value(value), "X")
 
 
 class LooksLikeQtyTests(unittest.TestCase):
@@ -345,6 +349,65 @@ class PreparePageTests(unittest.TestCase):
 
     self.assertGreaterEqual(len(bands), 1)
     self.assertTrue(all(b.data.startswith(b"\xff\xd8") for b in bands))
+
+
+class IgnoreNotesColumnTests(unittest.TestCase):
+  def test_masks_notes_and_ordered_quantity_without_touching_shipped(self):
+    from thuc_xuat.image_prep import _mask_ocr_columns, warp_available
+
+    if not warp_available():
+      self.skipTest("chưa cài opencv/numpy")
+    import cv2
+    import numpy as np
+
+    image = np.full((400, 1000, 3), 255, dtype=np.uint8)
+    for x in (25, 85, 560, 670, 820, 980):
+      cv2.line(image, (x, 0), (x, 399), (0, 0, 0), 2)
+    image[170:189, 600:630] = 0
+    image[170:189, 700:740] = 0
+    image[170:189, 865:940] = 0
+    masked = _mask_ocr_columns(image)
+    self.assertTrue((masked[170:189, 600:630] == 255).all())
+    self.assertTrue((masked[170:189, 865:940] == 255).all())
+    self.assertTrue((masked[170:189, 700:740] == 0).all())
+    self.assertTrue((masked[:, 820] == 0).all())
+
+
+class PageIdentificationTests(unittest.TestCase):
+  def test_ambiguous_or_truncated_pdn_does_not_block_matching_names(self):
+    from thuc_xuat.vision_extract import _match_order_from_page
+
+    orders = {"PDN016505": ["sua milo lua mach", "chao ngon viet nam"], "PDN016535": ["gio bo", "kho ca"]}
+    rows = [{"stt": 1, "ten": "Sữa MILO lúa mạch"}, {"stt": 2, "ten": "Chao ngon Việt Nam"}]
+    for pdn in ("PDN01650", "PDN016535"):
+      self.assertEqual(_match_order_from_page({"pdn": pdn, "dong": rows}, orders), "PDN016505")
+    self.assertEqual(_match_order_from_page({"pdn": "PDN 016505"}, orders), "PDN016505")
+
+  def test_single_footer_row_matches_the_only_order_with_that_name_at_stt(self):
+    from thuc_xuat.vision_extract import _match_order_from_page
+
+    orders = {"PDN016505": [""] * 185 + ["banh phong tom 200g"], "PDN016535": [""] * 72}
+    row = {"stt": 186, "ten": "Bánh phồng tôm 200g"}
+    self.assertEqual(_match_order_from_page({"pdn": None, "dong": [row]}, orders), "PDN016505")
+    self.assertIsNone(_match_order_from_page({"pdn": None, "dong": [{"stt": 186, "ten": "Tổng cộng"}]}, orders))
+
+  def test_short_table_with_one_row_removes_large_blank_region(self):
+    from thuc_xuat.image_prep import _short_table, warp_available
+
+    if not warp_available():
+      self.skipTest("chưa cài opencv/numpy")
+    import cv2
+    import numpy as np
+
+    photo = np.full((1300, 1100, 3), 245, dtype=np.uint8)
+    cv2.rectangle(photo, (60, 170), (1020, 236), (55, 55, 55), 2)
+    for x in (115, 737, 828, 930):
+      cv2.line(photo, (x, 170), (x, 236), (55, 55, 55), 2)
+    cv2.putText(photo, "186", (65, 214), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (20, 20, 20), 2)
+    band = _short_table(photo)
+    self.assertIsNotNone(band)
+    self.assertEqual(band.mode, "short_table")
+    self.assertLess(band.height, 1300 / 8)
 
 
 if __name__ == "__main__":

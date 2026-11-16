@@ -1,6 +1,6 @@
 # Thực Xuất Tool
 
-**Ảnh phiếu + Excel KiotViet → File Excel nhập kho** — đọc ảnh bằng AI chạy trên máy (Ollama).
+**Ảnh phiếu + Excel KiotViet → File Excel nhập kho** — đọc ảnh qua NVIDIA NIM.
 
 ## Cài đặt (máy dev)
 
@@ -14,62 +14,52 @@ py -3.12 -m pip install -r requirements.txt
 py -3.12 app.py
 ```
 
-## AI đọc ảnh — Ollama local
+## AI đọc ảnh qua NVIDIA NIM
 
-App dùng **Ollama + gemma3:4b** chạy trên máy: không cần mạng, không cần cookie, không cần API key.
+1. Tạo API key trong [NVIDIA Build](https://build.nvidia.com/nvidia/nemotron-3.5-super-vl-120b-a12b) và dán vào ô **API key NVIDIA** ở đầu cửa sổ.
+2. Chọn **Tự động · Super VL → Nano Omni** để ưu tiên Super VL và chuyển sang Nano Omni nếu endpoint gặp lỗi tạm thời. Có thể chọn riêng một model. App nhớ model đã chọn. Key nhập trong GUI chỉ dùng trong phiên đang mở. Có thể đặt `NVIDIA_API_KEY` để dùng cho GUI hoặc CLI.
+3. Thêm Excel và ảnh rồi bấm **Đọc phiếu và xuất Excel**. Ảnh đã tiền xử lý được gửi tới NVIDIA NIM.
 
-1. Cài [Ollama for Windows](https://ollama.com/download).
-2. Tải model đọc ảnh (chỉ 1 lần — app cũng tự hỏi và tải nếu thiếu):
-   ```bash
-   ollama pull gemma3:4b
-   ```
-3. Mở app là xong. **App tự bật Ollama** (`ollama serve`, chạy ẩn), tự kiểm tra model và hỏi tải nếu thiếu; trước khi đọc ảnh app kiểm tra lại lần nữa.
+Một lô có thể dùng nhiều request vì app nhận diện phiếu, đọc từng trang hoặc dải ảnh, và đọc lại vùng khó. NVIDIA Build cung cấp endpoint thử nghiệm và giới hạn phụ thuộc vào model và tải. [FAQ NVIDIA NIM](https://forums.developer.nvidia.com/t/nvidia-nim-faq/300317)
 
 Cấu hình trong `config.json` (cạnh app):
 
 | Key | Mặc định | Ý nghĩa |
 |-----|----------|---------|
-| `ollama_base_url` | `http://127.0.0.1:11434` | Địa chỉ Ollama |
-| `ollama_model` | `gemma3:4b` | Model vision (gemma3:12b chính xác hơn) |
-| `ollama_bands` | `0` | 0 = tự cắt ảnh thành dải; 1–4 = cố định |
-| `ollama_timeout` | `180` | Giây tối đa mỗi lần gọi |
-| `auto_open_output` | `true` | Tự mở thư mục chứa file kết quả |
+| `nim_model` | `nim-auto` | Model để đọc ảnh |
+| `auto_open_output` | `false` | Tự mở thư mục chứa file kết quả |
 | `output_dir` | `KetQua` | Thư mục chứa file kết quả (tương đối = cạnh app, hoặc đường dẫn tuyệt đối) |
 | `export_include_name` | `false` | `true` = file kết quả có thêm cột «Tên sản phẩm» |
 
-**App xử lý ảnh trước khi đưa cho AI:** làm phẳng tờ giấy (sửa nghiêng), dò các đường kẻ dọc của bảng rồi **che trắng đúng cột «Số lượng» in sẵn** — model chỉ còn cột «Thực xuất» viết tay để đọc. Đây là bước quyết định độ chính xác. Nếu không dò được bảng, app tự cắt trang thành các dải ngang có chồng lấn để đọc.
+**App xử lý ảnh trước khi đưa cho AI:** làm phẳng trang và che cột **Số lượng đặt** và **Ghi chú** khi dò được đường kẻ. Model chỉ được đọc cột **Thực xuất**. Nếu ô này trống thì bỏ dòng dù cột Ghi chú có nội dung.
 
-Khi có nhiều phiếu trong một lần chạy, app đọc tên 3 dòng đầu mỗi trang để biết trang thuộc phiếu nào, rồi đọc từng phiếu riêng. Trang nào model đọc sót quá nhiều dòng, app tự đọc lại bằng 2 nửa trang.
+Khi chạy nhiều phiếu, thêm tất cả ảnh cùng lúc. App tự nhóm ảnh theo mã PDN hoặc đối chiếu tên hàng ở nhiều STT trên từng ảnh với Excel. Nếu chưa đủ bằng chứng, app thử nhận diện lại rồi báo tên ảnh còn mơ hồ để bạn kiểm tra.
 
-**Độ chính xác thực tế (2 phiếu thật, 13 ảnh):** PDN016535 đúng 52/53 dòng; PDN016505 đúng 75/91 dòng. Lỗi còn lại thường là chữ viết tay bị xoay/nghiêng hoặc model ghép thêm chữ số (vd “2T x 24” đọc thành 2764). Vì vậy app có bảng **Kết quả** hiển thị TẤT CẢ dòng: nháy đúp một dòng để sửa ô «Đọc từ ảnh», app tự lưu lại Excel. Dòng bị bỏ (X / trống) hiển thị màu xám.
-
-Muốn chính xác hơn: đổi `ollama_model` sang `gemma3:12b` (cần `ollama pull gemma3:12b`, ~8 GB RAM/VRAM).
+Kiểm tra số lượng trong bảng **Kết quả** trước khi nhập KiotViet. Nháy đúp một dòng để sửa ô «Đọc từ ảnh», app tự lưu lại Excel. Dòng bị bỏ (X / trống) hiển thị màu xám.
 
 ## Cách dùng
 
 1. **Thêm Excel gốc** — một hoặc nhiều file `DanhSachChiTietDatHangNhap_*.xlsx`
-2. **Thêm tất cả ảnh** phiếu
-3. **Tạo file Excel** → AI đọc ảnh, xuất `PDNxxxxx_MaSanPham_ThucXuat.xlsx` vào thư mục **`KetQua`** cạnh app
+2. **Thêm ảnh…** của tất cả các phiếu
+3. **Đọc phiếu và xuất Excel** → AI đọc ảnh, xuất `PDNxxxxx_MaSanPham_ThucXuat.xlsx` vào thư mục **`KetQua`** cạnh app
 4. **Kiểm tra bảng Kết quả**, sửa dòng sai bằng nháy đúp
 5. Bấm **Mở thư mục xuất** để mở thư mục `KetQua` trong Explorer
+
+Nếu còn ảnh lỗi, bấm **Đọc phiếu và xuất Excel** lần nữa để xử lý ảnh chưa đọc được. Trong cùng phiên cửa sổ, app dùng lại kết quả của ảnh đã đọc và giữ các dòng bạn đã sửa tay. **Reset app** bắt đầu phiên xử lý sạch.
 
 ### File xuất
 
 File kết quả luôn có **2 cột**: `Mã sản phẩm | Thực xuất` — dùng để nhập KiotViet.
-Tên hàng vẫn hiển thị trong bảng «Kết quả» của app và trong cửa sổ «Sửa file đã xuất»
+Tên hàng hiển thị trong bảng «Kết quả»
 (lấy từ Excel gốc / file JSON phụ cạnh file kết quả), **không** còn cột Tên trong Excel xuất ra.
 
 ### Sửa file đã xuất (kể cả file của lần chạy trước)
 
-Khung **3. Kết quả** có ô **«Sửa file đã xuất»**:
+1. Trong **3. Kết quả**, danh sách hiện một file kết quả cho mỗi phiếu đang mở. Dùng **Chọn file khác...** để mở một file đã xuất trước đó.
+2. Chọn file để hiển thị ngay trong bảng bên dưới. Nháy đúp dòng cần sửa, nhập số hoặc phép tính như `3*8`, `10+2`, `(12-2)/2`, rồi nhấn **Enter** để tính và ghi lại file. Nhập `X` hoặc để trống để bỏ dòng.
+3. Dùng **Lưu bản sao...** để lưu file hiện tại sang tên mới.
 
-1. Chọn 1 file `.xlsx` trong danh sách (hoặc **«Chọn file khác...»** nếu file nằm ngoài `KetQua`)
-2. Bấm **«Mở để sửa...»** — bảng hiện Mã SP + Tên hàng + Thực xuất của file đó
-3. Nháy đúp 1 dòng để sửa số (để trống hoặc nhập `x` = xóa dòng), `Delete` để xóa dòng
-4. **Ctrl+S** hoặc **«Lưu (xuất lại file)»** — ghi đè đúng file đang sửa;
-   **«Lưu thành file mới...»** để giữ bản cũ
-
-Không cần ảnh hay Excel gốc, không cần chạy lại AI. Dùng được sau khi tắt/mở app.
+Có thể sửa file cũ mà không cần ảnh hay chạy lại AI. Khi có Excel gốc phù hợp, bảng hiển thị cả STT, ĐVT, số đặt và các dòng bị bỏ.
 
 ### Xuất lại file kết quả
 
@@ -77,19 +67,6 @@ Không cần ảnh hay Excel gốc, không cần chạy lại AI. Dùng được
 bấm **«Xuất lại file kết quả»** — app xuất lại từ kết quả đã có, **không đọc lại ảnh**.
 
 Thư mục xuất đổi được trong `config.json` (`output_dir`), mặc định `KetQua`.
-
-### Sửa file đã xuất (kể cả file của lần chạy trước)
-
-Khung **3. Kết quả** có ô **«Sửa file đã xuất»**:
-
-1. Chọn 1 file `.xlsx` trong danh sách (hoặc **«Chọn file khác...»** nếu file nằm ngoài `KetQua`)
-2. Bấm **«Mở để sửa...»** — bảng hiện Mã SP + Thực xuất của file đó
-3. Nháy đúp 1 dòng để sửa số (để trống hoặc nhập `x` = xóa dòng), `Delete` để xóa dòng
-4. **Ctrl+S** hoặc **«Lưu (xuất lại file)»** — ghi đè đúng file đang sửa;
-   **«Lưu thành file mới...»** để giữ bản cũ
-
-Không cần ảnh hay Excel gốc, không cần chạy lại AI. Dùng được sau khi tắt/mở app.
-
 
 ## Quy tắc nghiệp vụ
 
@@ -101,7 +78,7 @@ Không cần ảnh hay Excel gốc, không cần chạy lại AI. Dùng được
 | `10T`, `4T`, `1T`, `12` | Bỏ chữ, giữ nguyên số: 10, 4, 1, 12 |
 | `30cm`, `10 gói`, `30kg`, `18 quả` | Bỏ đơn vị, giữ nguyên số: 30, 10, 30, 18 |
 | `5b x 30kg` | 5 (30kg là trọng lượng nên không nhân) |
-| Chỉ `✓` `v` `V` `>` `/` `√` | Số lượng đặt (cột 4 Excel) |
+| OCR đọc nét giống `✓`, `✔`, `v`, `V`, `>`, `/`, `√` | Coi như `X`, bỏ dòng |
 | Trống / không có STT trên ảnh | Không xuất dòng |
 | `5,5` | 5.5 (giữ số lẻ) |
 
@@ -115,11 +92,11 @@ Bảng Kết quả có cột **ĐVT** cạnh cột «Đọc từ ảnh» để b
 ## CLI
 
 ```bash
-py -3.12 cli.py process -s PDN014044.xlsx -i anh1.jpg -i anh2.jpg
+py -3.12 cli.py process -s PDN014044.xlsx -i anh1.jpg anh2.jpg
 py -3.12 cli.py build -s file.xlsx -m map.json -o out.xlsx
 ```
 
-Mặc định CLI cũng ghi vào thư mục `KetQua`; đổi bằng `--out-dir`,
+Lệnh `process` đọc key từ `NVIDIA_API_KEY` và nhận tùy chọn `--model`. Mặc định CLI cũng ghi vào thư mục `KetQua`; đổi bằng `--out-dir`,
 xuất kèm tên sản phẩm bằng `--with-name`.
 
 ## Test
@@ -159,12 +136,10 @@ Chỉ cần gửi **một file exe**. Người dùng bấm chạy, bộ cài t�
 
 1. Chép app vào `%LOCALAPPDATA%\Programs\ThucXuatTool` (không cần quyền admin).
 2. Tạo lối tắt **«Thực Xuất»** ở Desktop và Start Menu.
-3. Cài Ollama nếu máy chưa có (tải bộ cài chính thức ~1,7 GB, chạy silent).
-4. Tải model `gemma3:4b` (~3,4 GB) — có thanh tiến độ.
-5. Bấm «Mở ứng dụng» là chạy.
+3. Bấm «Mở ứng dụng», dán API key và chọn model.
 
 Chạy lại `Setup.exe` = cập nhật đè bản mới; `config.json` và `KetQua\` **giữ nguyên**.
-Lần cài đầu cần mạng; các lần sau app tự cập nhật (mục trên).
+App cần mạng để đọc ảnh và kiểm tra cập nhật.
 
 Gỡ cài: xoá thư mục `%LOCALAPPDATA%\Programs\ThucXuatTool` và hai lối tắt.
 

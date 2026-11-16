@@ -13,7 +13,7 @@ class ConfigFileTests(unittest.TestCase):
   def test_defaults_when_no_file(self):
     with patch.object(config, "CONFIG_FILE", Path(tempfile.mktemp())):
       settings = config.get_ollama_settings()
-      self.assertTrue(config.auto_open_output_folder())
+      self.assertFalse(config.auto_open_output_folder())
     self.assertEqual(settings["base_url"], "http://127.0.0.1:11434")
     self.assertEqual(settings["model"], "gemma3:4b")
     self.assertEqual(settings["bands"], 0)

@@ -2,7 +2,11 @@
 """Xử lý phiếu xuất: map STT -> Mã SP + Thực xuất."""
 from __future__ import annotations
 
+import ast
+import math
+import operator
 import re
+from decimal import Decimal, DecimalException
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -30,6 +34,38 @@ class OutputRow:
 
 
 TICK_MARKS = frozenset({"✓", "✔", "v", "V", ">", "/", "√"})
+_MANUAL_OPS = {
+  ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv,
+}
+
+
+def calculate_manual_qty(text: str) -> int | float:
+  """Tính biểu thức số do người dùng nhập, giới hạn ở bốn phép tính."""
+  expression = text.strip().replace(",", ".").replace("×", "*").replace("÷", "/")
+  expression = re.sub(r"[xX]", "*", expression)
+  if len(expression) > 80 or not re.fullmatch(r"[0-9.+*/()\s-]+", expression):
+    raise ValueError("Nhập số hoặc phép tính hợp lệ, ví dụ 3*8, 10+2 hoặc 12/3.")
+
+  def evaluate(node: ast.AST) -> Decimal:
+    if isinstance(node, ast.Constant) and type(node.value) in (int, float):
+      return Decimal(str(node.value))
+    if isinstance(node, ast.BinOp) and type(node.op) in _MANUAL_OPS:
+      return _MANUAL_OPS[type(node.op)](evaluate(node.left), evaluate(node.right))
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+      value = evaluate(node.operand)
+      return -value if isinstance(node.op, ast.USub) else value
+    raise ValueError("Chỉ dùng số, dấu ngoặc và các phép +, -, *, /.")
+
+  try:
+    value = evaluate(ast.parse(expression, mode="eval").body)
+    number = float(value)
+  except SyntaxError as exc:
+    raise ValueError("Phép tính chưa hợp lệ.") from exc
+  except (DecimalException, OverflowError) as exc:
+    raise ValueError("Không tính được biểu thức. Kiểm tra phép chia cho 0.") from exc
+  if not math.isfinite(number) or number < 0:
+    raise ValueError("Thực xuất phải là số không âm và hữu hạn.")
+  return int(number) if number.is_integer() else number
 
 # Phiếu không có chữ Y. Nét gạch chéo (X) hay bị đọc thành Y → vẫn là "bỏ dòng".
 _X_OR_Y_RE = re.compile(r"^(?:\d+(?:[.,]\d+)?)?[XY]$")
@@ -186,6 +222,11 @@ def parse_qty(
   s = str(raw).strip()
   if not s:
     return None
+  if s.startswith("="):
+    try:
+      return calculate_manual_qty(s[1:])
+    except ValueError:
+      return None
   # "X", "5X", "Y", "5 Y" — cùng nghĩa: bỏ dòng. Trên phiếu không có chữ Y,
   # model hay đọc nét gạch chéo X thành Y (trước đây Y bị coi là dấu tick nên
   # dòng đáng bỏ lại bị xuất với số lượng đặt).

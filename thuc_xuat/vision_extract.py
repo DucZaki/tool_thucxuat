@@ -1,39 +1,78 @@
 ﻿# -*- coding: utf-8 -*-
-"""Đọc ảnh phiếu xuất bằng Ollama local (gemma3) → map STT -> thực xuất."""
+"""Đọc ảnh phiếu xuất → map STT -> thực xuất."""
 from __future__ import annotations
 
 import json
 import re
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from thuc_xuat.cancel import CancelledByUser, check_cancel
 from thuc_xuat.config import get_ollama_settings
-from thuc_xuat.image_prep import prepare_page, split_image
+from thuc_xuat.image_prep import prepare_assignment_focus, prepare_page, split_image
 from thuc_xuat.ollama_client import OllamaError, chat_vision
+from thuc_xuat.nim_client import NimError, NimVision
+from thuc_xuat.processor import TICK_MARKS
 
 # Retry khi 1 ảnh trả về 0 STT (AI bỏ qua trang)
 EMPTY_CHUNK_RETRIES = 5
+
+
+def _file_revision(path: Path) -> tuple[Path, int, int] | None:
+  try:
+    stat = path.stat()
+  except OSError:
+    return None
+  return path.resolve(), stat.st_size, stat.st_mtime_ns
+
+
+@dataclass
+class VisionResume:
+  """Giữ kết quả OCR theo ảnh trong phiên để có thể chạy tiếp lô lỗi."""
+
+  _scope: tuple = field(default=(), init=False)
+  _revisions: dict = field(default_factory=dict, init=False)
+  assigned: dict[Path, str] = field(default_factory=dict, init=False)
+  pages: dict[Path, tuple[str, dict[int, str]]] = field(default_factory=dict, init=False)
+
+  def prepare(self, excels: list[Path], images: list[Path], model: str) -> None:
+    scope = (tuple(_file_revision(excel) for excel in sorted(excels)), model)
+    revisions = {image: _file_revision(image) for image in images}
+    if scope != self._scope:
+      self.assigned.clear()
+      self.pages.clear()
+    else:
+      for image, revision in self._revisions.items():
+        if revision is None or revisions.get(image) != revision:
+          self.assigned.pop(image, None)
+          self.pages.pop(image, None)
+    self._scope, self._revisions = scope, revisions
+
+  def pending(self, images: list[Path]) -> list[Path]:
+    return [image for image in images if image not in self.pages]
 
 # ---------------------------------------------------------------------------
 # Ollama (gemma3:4b local) — prompt viết ngắn, nhấn mạnh cột viết tay.
 # 4b hay lẫn cột "Đặt" in sẵn với cột "Thực xuất" viết tay.
 # ---------------------------------------------------------------------------
-OLLAMA_SINGLE_PROMPT = """Bạn là OCR phiếu xuất kho. Ảnh là một trang bảng in (đã cắt cột «Số lượng đặt» in sẵn).
+OLLAMA_SINGLE_PROMPT = """Bạn là OCR phiếu xuất kho. Ảnh là bảng in; cột Số lượng đặt và Ghi chú có thể đã được che.
 
 Bảng còn các cột, từ trái sang phải:
 - STT: số in nhỏ ở mép trái.
 - Tên hàng: chữ IN dài (tiếng Việt và/hoặc tiếng Nhật). TUYỆT ĐỐI KHÔNG chép cột này.
+- Số lượng đặt: cột số IN trước Thực xuất, có thể vẫn nhìn thấy. Bỏ qua.
 - THỰC XUẤT: cột VIẾT TAY, mỗi ô rất ngắn (1–6 ký tự): số như 10, 5, 110, 5,5; hoặc 1T, 10H; hoặc dấu ✓; hoặc X.
-- Ghi chú: cột dấu ✓ ở mép phải — BỎ QUA.
+- Ghi chú: cột bên phải Thực xuất. Nội dung của cột này không liên quan.
 
 Quy tắc:
 - Chỉ đọc cột THỰC XUẤT viết tay. KHÔNG đọc tên hàng, KHÔNG đọc cột ghi chú.
+- BỎ QUA hoàn toàn Ghi chú dù có số, chữ, phép tính, X hay dấu tick. Nếu ô Thực xuất trống, bỏ STT đó kể cả khi ô Ghi chú cùng dòng có nội dung.
 - BƯỚC 1: xác định STT dòng ĐẦU và dòng CUỐI nhìn thấy. BƯỚC 2: chỉ đọc các dòng trong khoảng đó.
 - CHỈ ghi các STT CÓ TRONG ẢNH, không ghi tiếp tới {max_stt}.
-- Ô chỉ có dấu tick → "✓". Ô có chữ X / gạch chéo → "X" (phiếu KHÔNG có chữ Y;
-  nét nào giống chữ Y vẫn là X). Ô trống thực sự → bỏ STT đó.
+- Cột này không dùng dấu tick. Nét giống ✓, ✔, V, Y hay gạch chéo đều là dấu bỏ dòng: ghi "X".
+  Ô trống thực sự → bỏ STT đó.
 - Giữ đơn vị viết tay: "14 con", "5,5", "1T", "10H", "5T x 24".
 - Chữ T viết tay giống số 7 → ghi T: "1T", "4T", "10T", không ghi 17/47/107.
 - Không tự nhân/quy đổi.
@@ -51,15 +90,21 @@ Trả JSON thuần (không markdown): {"stt": [84]}"""
 
 OLLAMA_ASSIGN_PROMPT = """Ảnh là một trang bảng phiếu xuất kho Việt Nam.
 
-1. Đọc STT của dòng đầu tiên (số ở cột ngoài cùng bên trái).
-2. Đọc 3 tên hàng của 3 dòng đầu tiên ở cột "Tên hàng" (bỏ số lượng, bỏ ĐVT).
+1. Chép mã phiếu PDN nếu nhìn rõ trên đầu trang. Không thấy thì trả null.
+2. Chép tối đa 5 cặp STT và Tên hàng in sẵn, lấy ở đầu, giữa và cuối phần bảng nhìn rõ.
+3. Giữ tên đúng dòng có STT ở mép trái. Không chép cột Ghi chú, Thực xuất, ĐVT hay Số lượng. Không đoán nội dung bị khuất.
+4. Trang cuối có thể chỉ có một dòng ngay trên phần tổng cộng/chữ ký. Nếu thấy, vẫn chép đúng cặp STT và tên của dòng đó; bỏ qua các tổng số và watermark.
 
 Trả JSON thuần (không markdown):
-{"stt_dau": 19, "ten": ["tên dòng 1", "tên dòng 2", "tên dòng 3"]}"""
+{"pdn": null, "dong": [{"stt": 19, "ten": "tên hàng ở dòng 19"}, {"stt": 27, "ten": "tên hàng ở dòng 27"}]}"""
 
-# "5 X" / "10x" / "Y" — model đọc nhầm số in ở cột Đặt rồi ghép với chữ X viết
-# tay, hoặc đọc nét gạch chéo thành Y. Tất cả đều là "bỏ dòng".
-_X_ONLY_RE = re.compile(r"^(?:\d+(?:[.,]\d+)?\s*)?[xXyY]$")
+ASSIGN_FOCUS_PROMPT = OLLAMA_ASSIGN_PROMPT + """
+Ảnh này là phần cận cảnh. Ưu tiên dòng «Mã phiếu» in ngay dưới tiêu đề nếu có,
+và đọc ít nhất một STT cùng tên hàng, kể cả khi chỉ có một hàng trong ảnh."""
+
+# Model có thể ghép số in ở cột Đặt với ký hiệu bỏ dòng ở cột Thực xuất.
+_OCR_SKIP_MARKS = "xXyY" + "".join(sorted(TICK_MARKS))
+_X_ONLY_RE = re.compile(rf"^(?:\d+(?:[.,]\d+)?\s*)?[{re.escape(_OCR_SKIP_MARKS)}]$")
 
 
 def _parse_thuc_xuat_dict(raw: dict) -> dict[int, str]:
@@ -103,7 +148,7 @@ def _normalize_ollama_value(value: str) -> str:
   → quy về "X" để đúng quy tắc: có X là bỏ dòng. Nét gạch chéo bị đọc thành
   Y cũng quy về "X" (trên phiếu không có chữ Y).
   """
-  s = str(value or "").strip().strip('"').strip("'").strip()
+  s = str(value or "").replace("\ufe0e", "").replace("\ufe0f", "").strip().strip('"').strip("'").strip()
   # Dấu câu thừa cuối giá trị ("10.", "X,", "✓.") — bỏ để khớp quy tắc.
   s = s.strip(" .,;:")
   if not s:
@@ -382,6 +427,16 @@ def _merge_thuc_maps_weighted(maps: list[dict[int, str]]) -> dict[int, str]:
   return {stt: val for stt, (_, val) in best.items()}
 
 
+def _read_vision(prompt, images, cfg, cancel_event, on_progress):
+  if cfg.get("nim") is not None:
+    return cfg["nim"].read(prompt, images, cancel_event, on_progress)
+  return chat_vision(
+    prompt, images, model=cfg["model"], base_url=cfg["base_url"],
+    timeout=cfg["timeout"], num_ctx=cfg["num_ctx"], cancel_event=cancel_event,
+    keep_alive=cfg.get("keep_alive"),
+  )
+
+
 def _ollama_band_map(
   prompt: str,
   band,
@@ -401,39 +456,31 @@ def _ollama_band_map(
   parsed_ok = False
   best: dict[int, str] = {}
   best_range: tuple[int, int] | None = None
-  for attempt in range(1, EMPTY_CHUNK_RETRIES + 1):
+  attempts = 1 if cfg.get("nim") is not None else EMPTY_CHUNK_RETRIES
+  for attempt in range(1, attempts + 1):
     check_cancel(cancel_event)
     if on_progress:
       suffix = f" (thử lại {attempt})" if attempt > 1 else ""
       on_progress(f"Đang đọc {label}{suffix}")
     try:
-      text = chat_vision(
-        prompt,
-        [band.data],
-        model=cfg["model"],
-        base_url=cfg["base_url"],
-        timeout=cfg["timeout"],
-        num_ctx=cfg["num_ctx"],
-        cancel_event=cancel_event,
-        keep_alive=cfg.get("keep_alive"),
-      )
+      text = _read_vision(prompt, [band.data], cfg, cancel_event, on_progress)
       part, rng = _parse_ollama_data(json.loads(_json_slice(text)), max_stt)
       parsed_ok = True
       if len(part) > len(best):
         best, best_range = part, rng
       if len(part) >= min_keys:
         return part, rng
-    except CancelledByUser:
+    except (CancelledByUser, NimError):
       raise
     except OllamaError as exc:
       last_exc = exc
-      if attempt < EMPTY_CHUNK_RETRIES:
+      if attempt < attempts:
         time.sleep(2.0 * attempt)
         continue
       raise
     except Exception as exc:  # JSON hỏng, model trả rỗng...
       last_exc = exc
-    if attempt < EMPTY_CHUNK_RETRIES:
+    if attempt < attempts:
       time.sleep(1.0 * attempt)
   if not parsed_ok and last_exc is not None:
     raise ValueError(f"AI trả JSON không đọc được cho {label}:\n{last_exc}")
@@ -473,24 +520,17 @@ def _read_visible_stt(
   if on_progress:
     on_progress(f"Đang xác minh STT {label}")
   out: set[int] = set()
-  for attempt in range(1, 3):
+  for attempt in range(1 if cfg.get("nim") is not None else 2):
     try:
-      text = chat_vision(
-        STT_VISIBLE_PROMPT,
-        [strip],
-        model=cfg["model"],
-        base_url=cfg["base_url"],
-        timeout=cfg["timeout"],
-        num_ctx=cfg["num_ctx"],
-        cancel_event=cancel_event,
-        keep_alive=cfg.get("keep_alive"),
-      )
+      text = _read_vision(STT_VISIBLE_PROMPT, [strip], cfg, cancel_event, on_progress)
       data = json.loads(_json_slice(text))
+    except (CancelledByUser, NimError):
+      raise
     except Exception:
       data = None
     nums = data.get("stt") if isinstance(data, dict) else data
     out = set()
-    for item in nums or []:
+    for item in nums if isinstance(nums, list) else []:
       stt = _stt_int(item)
       if stt is not None and 1 <= stt <= max_stt:
         out.add(stt)
@@ -506,7 +546,7 @@ def _norm_name(text: str) -> str:
 
   s = unicodedata.normalize("NFD", str(text or "").lower())
   s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
-  s = re.sub(r"[^a-z0-9 ]+", " ", s)
+  s = "".join(ch if ch.isalnum() else " " for ch in s).replace("đ", "d")
   return re.sub(r"\s+", " ", s).strip()
 
 
@@ -535,95 +575,136 @@ def _names_score(names: list[str], product_names: list[str]) -> float:
   return _best_names_match(names, product_names)[0]
 
 
+def _match_order_from_page(data: dict, orders: dict[str, list[str]]) -> str | None:
+  """Đối chiếu PDN hoặc tên tại STT OCR đọc được; tránh ép chọn khi hai phiếu giống nhau."""
+  from difflib import SequenceMatcher
+  from thuc_xuat.image_match import extract_pdn
+
+  printed_pdn = extract_pdn(re.sub(r"(?<=PDN)[\s:-]+(?=\d)", "", str(data.get("pdn") or ""), flags=re.I))
+  known_pdn = printed_pdn if printed_pdn in orders else None
+
+  rows: dict[int, str] = {}
+  raw_names = data.get("ten")
+  if isinstance(raw_names, str):
+    raw_names = [raw_names]
+  names = [name for name in raw_names if isinstance(name, str)] if isinstance(raw_names, list) else []
+  raw_rows = data.get("dong")
+  if isinstance(raw_rows, list):
+    for row in raw_rows[:5]:
+      if not isinstance(row, dict):
+        continue
+      stt = _stt_int(row.get("stt"))
+      name = row.get("ten")
+      if stt and isinstance(name, str) and _norm_name(name):
+        rows.setdefault(stt, name)
+  elif names and (first := _stt_int(data.get("stt_dau"))):
+    rows = {first + offset: name for offset, name in enumerate(names[:5]) if _norm_name(name)}
+
+  def similarity(name: str, expected: str) -> float:
+    full = _norm_name(name)
+    score = SequenceMatcher(None, full, expected).ratio()
+    # Excel có thể kèm tên Nhật sau dấu |, còn ảnh chỉ thấy phần tiếng Việt.
+    if len(full) >= 7 and f" {full} " in f" {expected} ":
+      return max(score, 0.90)
+    return score
+
+  if rows:
+    anchored = []
+    for pdn, products in orders.items():
+      scores = [
+        similarity(name, products[stt - 1]) if stt <= len(products) else 0.0
+        for stt, name in rows.items()
+      ]
+      anchored.append((sum(scores) / len(scores), max(scores), pdn))
+    anchored.sort(reverse=True)
+    score, strong, pdn = anchored[0]
+    runner_up = anchored[1][0] if len(anchored) > 1 else 0.0
+    if score >= 0.62 and strong >= 0.82 and score - runner_up >= 0.12:
+      if known_pdn and known_pdn != pdn and (len(rows) < 2 or score < 0.78):
+        return known_pdn
+      return pdn
+    if known_pdn:
+      return known_pdn
+    # Đừng để dò theo tên ở STT khác lấn át bằng chứng rõ ràng nhưng không phân biệt được.
+    if score >= 0.62:
+      return None
+    # Dạng mới lấy tên ở các dòng không liên tiếp, không dùng dò chuỗi tên.
+    if isinstance(raw_rows, list):
+      return None
+
+  if known_pdn:
+    return known_pdn
+  if names:
+    ranked = sorted(
+      ((_best_names_match(names, products)[0], pdn) for pdn, products in orders.items()),
+      reverse=True,
+    )
+    score, pdn = ranked[0]
+    runner_up = ranked[1][0] if len(ranked) > 1 else 0.0
+    if score >= (0.84 if len(names) == 1 else 0.64) and score - runner_up >= 0.13:
+      return pdn
+  return None
+
+
 def _assign_pages_to_orders(
   images: list[Path],
   excel_paths: list[Path],
   cfg: dict,
   prog: Callable[[str], None],
   cancel_event: threading.Event | None,
+  on_issue: Callable[[str], None] | None = None,
+  resume: VisionResume | None = None,
 ) -> dict[str, list[Path]]:
-  """Chia ảnh về từng phiếu bằng 3 tên hàng đầu trang (so với danh sách SP).
-
-  Ảnh chụp từng trang thường không có header PDN; tên hàng ở đầu trang là
-  dấu hiệu ổn định nhất để biết trang thuộc phiếu nào.
-  """
-  from thuc_xuat.image_match import pdn_from_excel
+  from thuc_xuat.image_match import extract_pdn, pdn_from_excel
   from thuc_xuat.processor import load_products
 
-  orders: list[tuple[str, list[str]]] = []
+  orders: dict[str, list[str]] = {}
   for excel in excel_paths:
     pdn = (pdn_from_excel(excel) or excel.stem).upper()
     products = load_products(excel)
-    # Danh sách tên xếp theo STT (dòng trống giữa bảng để chỗ trống).
-    max_stt = max((p.stt for p in products), default=0)
-    names = [""] * max_stt
-    for p in products:
-      if 1 <= p.stt <= max_stt:
-        names[p.stt - 1] = _norm_name(p.name)
-    orders.append((pdn, names))
+    names = [""] * max((p.stt for p in products), default=0)
+    for product in products:
+      names[product.stt - 1] = _norm_name(product.name)
+    orders[pdn] = names
 
   assigned: dict[str, list[Path]] = {}
-  for i, img in enumerate(images, 1):
+  for index, image in enumerate(images, 1):
     check_cancel(cancel_event)
-    prog(f"Đang nhận diện ảnh {i}/{len(images)}: {img.name}...")
-    try:
-      band = prepare_page(img, cfg["bands"])[0]
-    except Exception as exc:  # ảnh hỏng → bỏ qua, các ảnh khác vẫn chạy
-      prog(f"Cảnh báo: bỏ ảnh {img.name} — không đọc được file ảnh ({exc})")
+    cached = resume.assigned.get(image) if resume is not None else None
+    if cached in orders:
+      assigned.setdefault(cached, []).append(image)
       continue
-    try:
-      text = chat_vision(
-        OLLAMA_ASSIGN_PROMPT,
-        [band.data],
-        model=cfg["model"],
-        base_url=cfg["base_url"],
-        timeout=cfg["timeout"],
-        num_ctx=cfg["num_ctx"],
-        cancel_event=cancel_event,
-        keep_alive=cfg.get("keep_alive"),
-      )
-      data = json.loads(_json_slice(text))
-      names = data.get("ten") or []
-      if isinstance(names, str):
-        names = [names]
-      names = [str(n) for n in names if str(n).strip()]
-      stt_dau = data.get("stt_dau")
-      if isinstance(stt_dau, str) and stt_dau.strip().isdigit():
-        stt_dau = int(stt_dau.strip())
-      if not isinstance(stt_dau, int):
-        stt_dau = 0
-    except CancelledByUser:
-      raise
-    except OllamaError:
-      raise
-    except Exception:
-      names = []
-      stt_dau = 0
-
-    # STT đầu trang vượt quá số dòng của một phiếu → chỉ phiếu còn lại là khớp.
-    eligible = [
-      (pdn, names_list) for pdn, names_list in orders if len(names_list) >= stt_dau > 0
-    ]
-    matches = sorted(
-      ((_best_names_match(names, names_list), pdn) for pdn, names_list in orders),
-      key=lambda item: item[0][0],
-      reverse=True,
-    )
-    (best_score, best_pos), best_pdn = matches[0] if matches else ((0.0, 0), "")
-    second = matches[1][0][0] if len(matches) > 1 else 0.0
-    if stt_dau and len(eligible) == 1 and (not names or best_score >= 0.30):
-      pdn = eligible[0][0]
-      assigned.setdefault(pdn, []).append(img)
-      prog(f"Ảnh {i} → {pdn} (STT đầu {stt_dau})")
-      continue
-    if names and best_score >= 0.40 and best_score - second >= 0.02:
-      assigned.setdefault(best_pdn, []).append(img)
-      prog(f"Ảnh {i} → {best_pdn} (khớp tên {best_score:.2f}, STT đầu {best_pos})")
+    prog(f"Đang nhận diện ảnh {index}/{len(images)}: {image.name}…")
+    owner = extract_pdn(image.name)
+    if owner not in orders:
+      owner = None
+      # Lần hai phóng vùng đầu và bảng ngắn, không để phần giấy trống lấn át dòng cần đọc.
+      for focused in (False, True):
+        try:
+          band = prepare_assignment_focus(image) if focused else split_image(image, 1)[0]
+        except (OSError, ValueError, IndexError):
+          continue
+        prompt = ASSIGN_FOCUS_PROMPT if focused else OLLAMA_ASSIGN_PROMPT
+        text = _read_vision(prompt, [band.data], cfg, cancel_event, prog)
+        try:
+          data = json.loads(_json_slice(text))
+        except ValueError:
+          continue
+        if not isinstance(data, dict):
+          continue
+        owner = _match_order_from_page(data, orders)
+        if owner:
+          break
+    if owner:
+      assigned.setdefault(owner, []).append(image)
+      if resume is not None:
+        resume.assigned[image] = owner
+      prog(f"Ảnh {index} → {owner}")
     else:
-      prog(
-        f"Cảnh báo: ảnh {i} ({img.name}) không rõ phiếu — "
-        f"khớp {best_pdn or '?'} {best_score:.2f} / nhì {second:.2f}"
-      )
+      issue = f"Chưa xác định được phiếu cho ảnh {image.name}."
+      prog(issue)
+      if on_issue:
+        on_issue(issue)
   return assigned
 
 
@@ -654,6 +735,8 @@ def _extract_one_ollama(
   prog: Callable[[str], None],
   on_progress: Callable[[str], None] | None,
   cancel_event: threading.Event | None,
+  on_issue: Callable[[str], None] | None = None,
+  resume: VisionResume | None = None,
 ) -> dict[int, str]:
   """Đọc 1 phiếu từ các ảnh đã biết thuộc phiếu đó."""
   from types import SimpleNamespace
@@ -668,25 +751,34 @@ def _extract_one_ollama(
   merged_scores: dict[int, int] = {}
   empty_images = 0
   skipped_images = 0
+  prompt = OLLAMA_SINGLE_PROMPT.format(pdn=pdn, max_stt=max_stt, stt_hint="")
   for i, img in enumerate(images, 1):
     check_cancel(cancel_event)
+    cached = resume.pages.get(img) if resume is not None else None
+    if cached is not None and cached[0] == pdn:
+      _commit_image_map(merged, merged_scores, cached[1])
+      prog(f"{pdn}: dùng lại kết quả ảnh {img.name}.")
+      continue
     try:
       bands = prepare_page(img, cfg["bands"])
     except Exception as exc:  # ảnh hỏng/định dạng lạ → bỏ ảnh, không bỏ cả phiếu
       empty_images += 1
-      prog(f"Cảnh báo: bỏ ảnh {img.name} — không đọc được file ảnh ({exc})")
+      issue = f"{pdn}: không mở được ảnh {img.name} ({exc})."
+      prog(issue)
+      if on_issue:
+        on_issue(issue)
       continue
     img_maps: list[dict[int, str]] = []
     for band in bands:
-      prompt = OLLAMA_SINGLE_PROMPT.format(
-        pdn=pdn, max_stt=max_stt, stt_hint=""
-      )
+      band_prompt = prompt
+      if band.mode == "short_table":
+        band_prompt += "\nẢnh đã cắt sát bảng ngắn. Có thể chỉ có 1 dòng; dùng STT in ở ô ngoài cùng bên trái."
       label = f"{pdn} — ảnh {i}/{len(images)}: {img.name} | {band.label}"
       part: dict[int, str] = {}
       part_range: tuple[int, int] | None = None
       try:
         part, part_range = _ollama_band_map(
-          prompt,
+          band_prompt,
           band,
           max_stt,
           cfg,
@@ -700,19 +792,21 @@ def _extract_one_ollama(
         # Trang chỉ có đúng 1 dòng (stt_dau == stt_cuoi) thì thôi: đọc lại nửa
         # trang dễ "nhìn" sang mặt sau tờ giấy và bịa thêm dòng.
         single_row = bool(part_range and part_range[0] == part_range[1])
-        if band.mode in ("page", "table") and len(part) < 5 and not single_row:
+        min_page_keys = 5
+        if cfg.get("nim") is not None and part_range:
+          min_page_keys = min(min_page_keys, part_range[1] - part_range[0] + 1)
+        if band.mode in ("page", "table") and 0 < len(part) < min_page_keys and not single_row:
           sub_maps: list[dict[int, str]] = []
           for j, data in enumerate(_split_band(band), 1):
-            sub, _ = _ollama_band_map(
-              prompt,
-              SimpleNamespace(data=data, mode="band"),
-              max_stt,
-              cfg,
-              on_progress,
-              f"{label} — nửa {j}",
-              cancel_event,
-              min_keys=3,
-            )
+            try:
+              sub, _ = _ollama_band_map(
+                prompt, SimpleNamespace(data=data, mode="band"), max_stt, cfg,
+                on_progress, f"{label} — nửa {j}", cancel_event, min_keys=3,
+              )
+            except (CancelledByUser, NimError):
+              raise
+            except ValueError:
+              continue
             if sub:
               sub_maps.append(sub)
           alt = _merge_thuc_maps_weighted(sub_maps)
@@ -726,6 +820,8 @@ def _extract_one_ollama(
             part = alt
         if part:
           img_maps.append(part)
+      except (CancelledByUser, NimError):
+        raise
       except Exception as exc:  # ảnh bị lỗi model (vd lặp token) → thử đọc theo nửa trang
         prog(f"Cảnh báo: dải {band.label} lỗi — {exc}")
       # Fallback: nếu cả trang lỗi/trống, thử đọc theo nửa trang.
@@ -743,6 +839,8 @@ def _extract_one_ollama(
               cancel_event,
               min_keys=3,
             )
+          except (CancelledByUser, NimError):
+            raise
           except Exception as exc:
             prog(f"Cảnh báo: nửa {j} lỗi — {exc}")
             sub = {}
@@ -771,11 +869,16 @@ def _extract_one_ollama(
         if part:
           prog(f"Đọc lại {img.name} bằng ảnh gốc: {len(part)} STT")
           img_maps.append(part)
+      except (CancelledByUser, NimError):
+        raise
       except Exception as exc:
         prog(f"Cảnh báo: đọc lại ảnh gốc {img.name} lỗi — {exc}")
     if not img_maps:
       empty_images += 1
-      prog(f"Cảnh báo: ảnh {img.name} không đọc được STT nào")
+      issue = f"{pdn}: không đọc được STT/Thực xuất trên ảnh {img.name}."
+      prog(issue)
+      if on_issue:
+        on_issue(issue)
       continue
     # Chốt riêng từng ảnh: gộp các dải trong ảnh, rồi chỉ BỔ SUNG STT mới
     # vào kết quả tổng. Ảnh đầu thắng — ảnh sau không ghi đè số đã đọc đúng.
@@ -802,6 +905,8 @@ def _extract_one_ollama(
         f"Cảnh báo: bỏ ảnh {img.name} — đọc được {len(img_map)} STT "
         "(vượt quá số dòng một trang, nghi model điền thêm)"
       )
+      if on_issue:
+        on_issue(f"{pdn}: ảnh {img.name} có STT vượt phạm vi một trang.")
       continue
     # Ảnh bị cắt dải (mode "band") dễ đọc lẫn chữ mờ mặt sau; ảnh chỉ có ít dòng
     # mà model trả nhiều STT cũng vậy. Xác minh bằng cột STT in rõ ở mép trái.
@@ -831,8 +936,14 @@ def _extract_one_ollama(
         f"Cảnh báo: bỏ kết quả ảnh {img.name} — STT rời rạc "
         f"({', '.join(str(k) for k in keys[:8])}...)"
       )
+      if on_issue:
+        on_issue(f"{pdn}: ảnh {img.name} có kết quả STT thiếu nhất quán.")
       continue
     added, fixed = _commit_image_map(merged, merged_scores, img_map)
+    if resume is not None and len(img_maps) >= len(bands):
+      resume.pages[img] = (pdn, img_map)
+    elif resume is not None and on_issue:
+      on_issue(f"{pdn}: ảnh {img.name} còn dải chưa đọc được.")
     prog(
       f"Ảnh {i}/{len(images)} xong: {img.name} — {len(img_map)} STT "
       f"(+{added} mới"
@@ -853,6 +964,10 @@ def _extract_orders_ollama(
   image_paths: list[Path],
   on_progress: Callable[[str], None] | None = None,
   cancel_event: threading.Event | None = None,
+  nim: NimVision | None = None,
+  images_by_excel: dict[Path, list[Path]] | None = None,
+  on_issue: Callable[[str], None] | None = None,
+  resume: VisionResume | None = None,
 ) -> dict[str, dict[int, str]]:
   from thuc_xuat.image_match import pdn_from_excel
 
@@ -861,43 +976,48 @@ def _extract_orders_ollama(
       on_progress(msg)
 
   cfg = get_ollama_settings()
+  if nim is not None:
+    cfg.update(nim=nim, model=nim.model)
   ordered = _sort_images(image_paths)
+  if resume is not None:
+    resume.prepare(excel_paths, ordered, cfg["model"])
+    reused = len(ordered) - len(resume.pending(ordered))
+    if reused:
+      prog(f"Dùng lại {reused} ảnh đã đọc, xử lý {len(ordered) - reused} ảnh còn lại…")
+  provider = "NVIDIA NIM" if nim is not None else "Ollama"
   prog(
-    f"Ollama {cfg['model']}: {len(ordered)} ảnh, {len(excel_paths)} phiếu "
-    f"(làm phẳng trang + cắt cột số lượng in)..."
+    f"{provider} {cfg['model']}: {len(ordered)} ảnh, {len(excel_paths)} phiếu "
+    "(làm phẳng trang, bỏ cột Ghi chú)…"
   )
 
-  if len(excel_paths) == 1:
-    pdn = (pdn_from_excel(excel_paths[0]) or excel_paths[0].stem).upper()
-    merged = _extract_one_ollama(
-      excel_paths[0], ordered, cfg, prog, on_progress, cancel_event
-    )
-    return {pdn: merged}
+  def order_id(excel: Path) -> str:
+    return (pdn_from_excel(excel) or excel.stem).upper()
 
-  # Nhiều phiếu: chia ảnh theo tên hàng đầu trang, rồi đọc từng phiếu riêng.
-  assignments = _assign_pages_to_orders(
-    ordered, excel_paths, cfg, prog, cancel_event
-  )
+  if images_by_excel is not None:
+    assignments = {order_id(excel): _sort_images(images_by_excel[excel]) for excel in excel_paths}
+    prog("Đọc ảnh theo từng phiếu đã gán.")
+  elif len(excel_paths) == 1:
+    assignments = {order_id(excel_paths[0]): ordered}
+  else:
+    assignments = _assign_pages_to_orders(ordered, excel_paths, cfg, prog, cancel_event, on_issue, resume)
   if not assignments:
+    examples = ", ".join(photo.name for photo in ordered[:5])
     raise ValueError(
-      "gemma3:4b không nhận diện được ảnh nào thuộc phiếu nào.\n\n"
-      "Kiểm tra ảnh có chụp rõ 3 dòng đầu bảng (tên hàng) và đúng phiếu không."
+      f"Không xác định được phiếu cho ảnh: {examples}.\n\n"
+      "Kiểm tra đầu trang hoặc các cột STT và Tên hàng có nhìn rõ không."
     )
 
   result: dict[str, dict[int, str]] = {}
   for excel in excel_paths:
-    pdn = (pdn_from_excel(excel) or excel.stem).upper()
+    pdn = order_id(excel)
     images = assignments.get(pdn) or []
     if not images:
       prog(f"Cảnh báo: không có ảnh nào khớp {pdn}")
       continue
     result[pdn] = _extract_one_ollama(
-      excel, images, cfg, prog, on_progress, cancel_event
+      excel, images, cfg, prog, on_progress, cancel_event, on_issue, resume
     )
 
-  missing = [pdn for pdn in assignments if pdn not in result]
-  if missing:
-    prog("Chưa đọc được phiếu: " + ", ".join(missing))
   unassigned = len(ordered) - sum(len(v) for v in assignments.values())
   prog(
     f"Xong đọc ảnh: {sum(len(v) for v in result.values())} STT / "
@@ -912,10 +1032,21 @@ def extract_orders_from_images(
   image_paths: list[str | Path],
   on_progress: Callable[[str], None] | None = None,
   cancel_event: threading.Event | None = None,
+  *,
+  nim: NimVision | None = None,
+  images_by_excel: dict[Path, list[Path]] | None = None,
+  on_issue: Callable[[str], None] | None = None,
+  resume: VisionResume | None = None,
 ) -> dict[str, dict[int, str]]:
   imgs = [Path(p) for p in image_paths]
   excels = [Path(p) for p in excel_paths]
   for p in imgs:
-    if not p.exists():
+    if resume is None and not p.exists():
       raise FileNotFoundError(f"Không tìm thấy ảnh: {p}")
-  return _extract_orders_ollama(excels, imgs, on_progress, cancel_event)
+  if images_by_excel is not None:
+    if set(images_by_excel) != set(excels) or any(not images_by_excel[p] for p in excels):
+      raise ValueError("Mỗi Excel phải có ít nhất một ảnh đã gán.")
+    grouped = [photo.resolve() for pages in images_by_excel.values() for photo in pages]
+    if len(grouped) != len(set(grouped)) or set(grouped) != {photo.resolve() for photo in imgs}:
+      raise ValueError("Mỗi ảnh cần được gán đúng một lần cho một phiếu trong lô.")
+  return _extract_orders_ollama(excels, imgs, on_progress, cancel_event, nim, images_by_excel, on_issue, resume)

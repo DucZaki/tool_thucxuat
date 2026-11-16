@@ -8,11 +8,9 @@ CÀI BẰNG BỘ CÀI (cách nhanh nhất)
 2. Bộ cài tự làm hết, không cần bấm gì:
      - chép app vào %LOCALAPPDATA%\Programs\ThucXuatTool
      - tạo lối tắt «Thực Xuất» ở Desktop và Start Menu
-     - cài Ollama nếu máy chưa có (~1,7 GB)
-     - tải model gemma3:4b (~3,4 GB, có thanh tiến độ)
 3. Cài xong bấm «Mở ứng dụng». Lần sau mở bằng lối tắt «Thực Xuất».
 
-Lần cài đầu cần mạng. Chạy lại Setup.exe = cập nhật bản mới,
+App cần mạng để đọc ảnh. Chạy lại Setup.exe = cập nhật bản mới,
 file config.json và thư mục KetQua vẫn giữ nguyên.
 
 CÁCH CÀI BẰNG FILE ZIP (nếu không dùng bộ cài)
@@ -33,31 +31,22 @@ Nếu đã có đủ _internal mà vẫn lỗi DLL:
   https://aka.ms/vs/17/release/vc_redist.x64.exe
   Rồi mở lại app.
 
-MÁY ĐỌC ẢNH BẰNG OLLAMA (mặc định, không cần mạng)
---------------------------------------------------
-App mặc định dùng model gemma3:4b chạy trên chính máy tính.
-
-Chỉ cần cài Ollama 1 lần: https://ollama.com/download
-Sau đó KHÔNG cần mở Ollama bằng tay:
-  - Mở app → app tự bật Ollama (chạy ẩn) và tự kiểm tra model.
-  - Nếu chưa có model, app hỏi «Tải ngay?» → bấm Yes là app tự tải
-    (khoảng 3.3 GB, chỉ 1 lần, có hiện % ở thanh dưới).
-  - Bấm «Tạo file Excel» lúc nào app cũng kiểm tra lại Ollama trước.
-
-Nếu muốn tự tải bằng tay, mở PowerShell:
-      ollama pull gemma3:4b
-
-Máy yếu / ảnh mờ: dùng model lớn hơn sẽ chính xác hơn:
-      ollama pull gemma3:12b
-rồi sửa «ollama_model» trong file config.json (cạnh ThucXuatTool.exe)
-thành gemma3:12b.
+ĐỌC ẢNH QUA NVIDIA NIM
+----------------------
+Tạo API key tại https://build.nvidia.com/ rồi dán vào ô «API key NVIDIA».
+Chọn «Tự động · Super VL → Nano Omni» hoặc chọn một model trong danh sách.
+Ô nhập chỉ giữ key đến khi tắt app. App nhớ model đã chọn.
+Khi bấm «Đọc phiếu và xuất Excel», ảnh đã tiền xử lý được gửi tới NVIDIA NIM.
 
 CÁCH DÙNG
 ---------
 1. Thêm Excel gốc (DanhSachChiTietDatHangNhap_*.xlsx)
-   — có thể thêm 1 lúc nhiều phiếu, app tự chia ảnh theo phiếu.
-2. Thêm tất cả ảnh phiếu
-3. Bấm «Tạo file Excel»
+   — có thể thêm nhiều phiếu.
+2. Bấm «Thêm ảnh…» để chọn tất cả ảnh. App tự xác định ảnh thuộc phiếu nào.
+   App chỉ đọc cột Thực xuất. Nội dung cột Ghi chú không dùng để tính số lượng.
+3. Bấm «Đọc phiếu và xuất Excel»
+   Nếu còn ảnh lỗi, bấm lại nút này để đọc tiếp; app giữ kết quả ảnh đã đọc
+   và các dòng đã sửa tay trong phiên đang mở.
 4. Kết quả: PDNxxxxx_MaSanPham_ThucXuat.xlsx trong thư mục «KetQua»
    (nằm cạnh ThucXuatTool.exe).
    Bấm «Mở thư mục xuất» để mở thư mục này trong Explorer.
@@ -67,20 +56,17 @@ CÁCH DÙNG
 
 SỬA FILE ĐÃ XUẤT (kể cả file của lần chạy trước)
 -----------------------------------------------
-Khung «3. Kết quả» có ô «Sửa file đã xuất»:
-1. Chọn 1 file trong danh sách (hoặc «Chọn file khác...»).
-2. Bấm «Mở để sửa...».
-3. Nháy đúp 1 dòng để sửa số Thực xuất (để trống = xóa dòng),
-   phím Delete = xóa dòng đang chọn.
-4. Ctrl+S (hoặc «Lưu (xuất lại file)») để ghi lại file;
-   «Lưu thành file mới...» nếu muốn giữ bản cũ.
-Không cần ảnh, không cần Excel gốc, không phải đọc lại AI.
-Cửa sổ sửa luôn hiện Tên hàng (lấy từ Excel gốc / file JSON phụ).
+1. Chọn một file của phiếu đang mở, hoặc dùng «Chọn file khác...».
+2. File hiện ngay trong bảng «3. Kết quả».
+3. Nháy đúp một dòng, nhập số hoặc phép tính (3*8, 10+2, 12/3)
+   rồi nhấn Enter để tính và lưu. Nhập X hoặc để trống để bỏ dòng.
+4. Dùng «Lưu bản sao...» nếu muốn lưu dưới tên mới.
+Có thể sửa file cũ mà không cần ảnh hay đọc lại AI.
 
 FILE XUẤT RA
 ------------
 File kết quả luôn có 2 cột: Mã sản phẩm + Thực xuất (dùng nhập KiotViet).
-Tên hàng vẫn hiện trong bảng «Kết quả» của app và trong cửa sổ «Sửa file đã xuất»
+Tên hàng hiển thị trong bảng «Kết quả»
 (lấy từ Excel gốc / file JSON phụ cạnh file kết quả) — không còn cột Tên trong Excel xuất ra.
 
 XUẤT LẠI FILE KẾT QUẢ
@@ -105,7 +91,7 @@ CÁCH TÍNH SỐ LƯỢNG
 - Ghi 5T x 24            -> 120 (dấu x cũng là nhân)
 - Ghi 10T, 4T, 1T        -> 10, 4, 1 (bỏ chữ, giữ nguyên số)
 - Ghi 30cm, 10 gói, 30kg -> 30, 10, 30 (bỏ đơn vị, giữ nguyên số)
-- Chỉ có dấu tick ✓      -> lấy số lượng đặt
+- AI đọc nét giống ✓     -> coi là X, bỏ dòng
 KHÔNG nhân theo ĐVT: ĐVT «thùng 20 hộp» + ghi 10T vẫn là 10 thùng -> xuất 10.
 Chỉ nhân khi ô viết tay có dấu nhân (vd 5T x 24 -> 120).
 Cột ĐVT trong bảng Kết quả giúp bạn đối chiếu trước khi nhập KiotViet.

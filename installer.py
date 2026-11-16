@@ -4,35 +4,27 @@
 Bấm chạy là tự:
   1. Chép app vào %LOCALAPPDATA%\\Programs\\ThucXuatTool (giữ config.json + KetQua cũ)
   2. Tạo lối tắt Desktop + Start Menu
-  3. Cài Ollama nếu máy chưa có (tải bộ cài chính thức, chạy silent)
-  4. Tải model gemma3:4b (~3,4 GB) kèm thanh tiến độ
-  5. Mở app
+  3. Mở app để nhập API key NVIDIA NIM
 
 Chạy lại bộ cài = cập nhật đè bản mới, dữ liệu người dùng không mất.
 """
 from __future__ import annotations
 
 import os
-import re
 import sys
-import tempfile
 import threading
 import tkinter as tk
 import zipfile
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-from thuc_xuat import ollama_setup
 from thuc_xuat.cancel import CancelledByUser
-from thuc_xuat.config import OLLAMA_DEFAULT_MODEL
-from thuc_xuat.ollama_client import ensure_server, find_ollama_exe, has_model, pull_model, remove_ollama_from_startup
 from thuc_xuat.proc import install_no_window_defaults, popen, run
 from thuc_xuat.version import __version__
 
 APP_NAME = "ThucXuatTool"
 EXE_NAME = "ThucXuatTool.exe"
 SHORTCUT_NAME = "Thực Xuất"
-GB = 1024**3
 MB = 1024**2
 
 
@@ -255,14 +247,6 @@ class SetupWindow(tk.Tk):
   def set_detail(self, text: str) -> None:
     self.detail_var.set(text)
 
-  def bar_indeterminate(self) -> None:
-    self.progress.config(mode="indeterminate")
-    self.progress.start(12)
-
-  def bar_determinate(self, value: float = 0) -> None:
-    self.progress.stop()
-    self.progress.config(mode="determinate", maximum=100, value=value)
-
   def check_cancel(self) -> None:
     if self.cancel_event.is_set():
       raise CancelledByUser("Đã hủy cài đặt.")
@@ -285,7 +269,6 @@ class SetupWindow(tk.Tk):
     threading.Thread(target=self.worker, daemon=True).start()
 
   def worker(self) -> None:
-    model = OLLAMA_DEFAULT_MODEL
     target = install_dir()
     try:
       self.post(self.set_status, "Đang chép ứng dụng...")
@@ -305,39 +288,6 @@ class SetupWindow(tk.Tk):
         self.post(self.log, f"Không tạo được lối tắt: {exc}")
 
       self.check_cancel()
-      self.post(self.set_status, "Đang kiểm tra Ollama...")
-      if find_ollama_exe() is None:
-        self.post(self.log, "Chưa có Ollama — tải bộ cài chính thức (khoảng 1,7 GB)")
-        dest = Path(tempfile.gettempdir()) / "OllamaSetup.exe"
-        self.post(self.bar_determinate, 0)
-        self.post(self.set_status, "Đang tải bộ cài Ollama (1,7 GB)...")
-        ollama_setup.download_setup(
-          dest,
-          on_progress=lambda done, total: self.post(
-            self.on_download_progress, done, total, "Ollama"
-          ),
-          cancel_event=self.cancel_event,
-        )
-        self.post(self.bar_indeterminate)
-        self.post(self.set_status, "Đang cài Ollama (1–3 phút, không cần bấm gì)...")
-        exe = ollama_setup.install(dest)
-        self.post(self.log, f"Đã cài Ollama: {exe}")
-      else:
-        self.post(self.log, "Ollama đã có sẵn")
-
-      self.check_cancel()
-      self.post(self.set_status, "Đang bật Ollama...")
-      ensure_server(on_status=lambda msg: self.post(self.set_status, msg))
-      # Ollama chỉ chạy khi app chạy — bỏ tự khởi động cùng Windows.
-      remove_ollama_from_startup()
-
-      if has_model(model):
-        self.post(self.log, f"Model {model} đã có sẵn")
-      else:
-        self.post(self.bar_determinate, 0)
-        self.post(self.set_status, f"Đang tải model {model} (khoảng 3,4 GB)...")
-        pull_model(model, on_status=self.on_model_status)
-
       self.post(self.on_success)
     except CancelledByUser as exc:
       self.post(self.on_cancelled, str(exc))
@@ -349,27 +299,13 @@ class SetupWindow(tk.Tk):
   def on_extract_progress(self, done: int, total: int) -> None:
     self.set_detail(f"{done / MB:.0f} / {total / MB:.0f} MB")
 
-  def on_download_progress(self, done: int, total: int, label: str) -> None:
-    if total:
-      pct = int(done * 100 / total)
-      self.progress.config(value=pct)
-      self.set_detail(f"{label}: {done / GB:.2f} / {total / GB:.2f} GB ({pct}%)")
-    else:
-      self.set_detail(f"{label}: {done / GB:.2f} GB")
-
-  def on_model_status(self, msg: str) -> None:
-    self.set_status(msg)
-    match = re.search(r"(\d+)%", msg)
-    if match:
-      self.progress.config(value=int(match.group(1)))
-
   # ----- kết thúc
 
   def on_success(self) -> None:
     self._running = False
     self.progress.stop()
     self.progress.config(mode="determinate", value=100)
-    self.set_status("Cài đặt hoàn tất — model đã sẵn sàng.")
+    self.set_status("Cài đặt hoàn tất — mở app để nhập API key NVIDIA NIM.")
     self.set_detail(f"Đã cài vào {install_dir()}")
     self.log("Xong. Bấm «Mở ứng dụng» để chạy.")
     self.primary_btn.config(text="Mở ứng dụng", state="normal")

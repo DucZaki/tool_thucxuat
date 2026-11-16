@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
-"""CLI: đọc ảnh phiếu bằng Ollama → xuất Excel nhập kho."""
+"""CLI: đọc ảnh phiếu bằng NVIDIA NIM → xuất Excel nhập kho."""
 from __future__ import annotations
 
 import argparse
 import sys
 from pathlib import Path
 
-from thuc_xuat.config import output_dir
+from thuc_xuat.config import load_config, output_dir
 from thuc_xuat.io_json import load_mapping, save_mapping
+from thuc_xuat.nim_client import DEFAULT_MODEL, MODELS, NimVision
 from thuc_xuat.pipeline import process_batch_like_chat
 from thuc_xuat.processor import build_output, default_output_path, load_products, save_output
 from thuc_xuat.updater import check_for_update
@@ -15,6 +16,7 @@ from thuc_xuat.version import __version__
 
 
 def cmd_process(args: argparse.Namespace) -> int:
+  model = args.model or load_config().get("nim_model") or DEFAULT_MODEL
   batch = process_batch_like_chat(
     args.source,
     args.images,
@@ -22,6 +24,7 @@ def cmd_process(args: argparse.Namespace) -> int:
     on_progress=lambda msg: print(msg, flush=True),
     output_dir=Path(args.out_dir) if args.out_dir else output_dir(),
     include_name=args.with_name,
+    nim=NimVision(model),
   )
   for r in batch.results:
     print(f"OK: {r.output_path}")
@@ -34,6 +37,8 @@ def cmd_process(args: argparse.Namespace) -> int:
       r.thuc_xuat_map,
       meta={"source": str(r.source_path)},
     )
+  for warning in batch.warnings:
+    print(f"CANH BAO: {warning}", file=sys.stderr)
   for p, msg in batch.errors:
     print(f"LOI {p.name}: {msg}", file=sys.stderr)
   return 0 if batch.ok_count and not batch.fail_count else 1
@@ -73,12 +78,13 @@ def main(argv: list[str] | None = None) -> int:
   parser = argparse.ArgumentParser(description="Thuc xuat: anh + Excel -> Excel ket qua")
   sub = parser.add_subparsers(dest="command", required=True)
 
-  p_proc = sub.add_parser("process", help="Doc anh bang Ollama va xuat Excel")
+  p_proc = sub.add_parser("process", help="Doc anh bang NVIDIA NIM va xuat Excel")
   p_proc.add_argument("-s", "--source", nargs="+", required=True, help="Excel goc (1 hoac nhieu)")
   p_proc.add_argument("-i", "--images", nargs="+", required=True, help="Anh phieu")
   p_proc.add_argument("-o", "--output", help="Chi dung khi co 1 Excel")
   p_proc.add_argument("--out-dir", help="Thu muc xuat (mac dinh: KetQua canh app)")
   p_proc.add_argument("--with-name", action="store_true", help="Xuat kem cot Ten san pham")
+  p_proc.add_argument("--model", choices=tuple(MODELS.values()), help="Model NVIDIA NIM; key tu NVIDIA_API_KEY")
   p_proc.set_defaults(func=cmd_process)
 
   p_build = sub.add_parser("build", help="Xuat Excel tu file JSON map (khong can anh)")

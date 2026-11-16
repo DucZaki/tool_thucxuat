@@ -19,7 +19,6 @@ ROOT = Path(__file__).resolve().parent
 DIST = ROOT / "dist"
 APP = DIST / "ThucXuatTool"
 BUILD = ROOT / "build"
-PAYLOAD_STAGE = BUILD / "payload_app"
 PAYLOAD_ZIP = BUILD / "payload.zip"
 DOCS = (
     "HUONG-DAN-NGUOI-DUNG.txt",
@@ -36,28 +35,19 @@ def run(cmd: list[str]) -> None:
 
 
 def stage_payload() -> None:
-  """Copy app sạch (bỏ config.json/KetQua của máy dev) rồi nén thành payload.zip."""
+  """Nén trực tiếp app đã build, bỏ cấu hình và dữ liệu của máy dev."""
+  if not (APP / "ThucXuatTool.exe").is_file():
+    raise SystemExit(f"Thiếu {APP / 'ThucXuatTool.exe'} — chạy lại không có --no-app.")
   for name in DOCS:
     source = ROOT / name
     if source.exists():
       shutil.copy2(source, APP / name)
-  if not (APP / "ThucXuatTool.exe").exists():
-    raise SystemExit(f"Thiếu {APP / 'ThucXuatTool.exe'} — chạy lại không có --no-app.")
-
-  if PAYLOAD_STAGE.exists():
-    shutil.rmtree(PAYLOAD_STAGE)
-  shutil.copytree(
-    APP,
-    PAYLOAD_STAGE,
-    ignore=shutil.ignore_patterns(*SKIP, "*.log"),
-  )
-
-  if PAYLOAD_ZIP.exists():
-    PAYLOAD_ZIP.unlink()
+  BUILD.mkdir(parents=True, exist_ok=True)
   with zipfile.ZipFile(PAYLOAD_ZIP, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-    for path in sorted(PAYLOAD_STAGE.rglob("*")):
-      if path.is_file():
-        zf.write(path, path.relative_to(PAYLOAD_STAGE).as_posix())
+    for path in sorted(APP.rglob("*")):
+      rel = path.relative_to(APP)
+      if path.is_file() and not any(part in SKIP or part.endswith(".log") for part in rel.parts):
+        zf.write(path, rel.as_posix())
   print(f"payload.zip: {PAYLOAD_ZIP.stat().st_size / 1024 / 1024:.1f} MB")
 
 

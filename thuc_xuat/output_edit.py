@@ -6,10 +6,13 @@ file kết quả chỉ có 2 hoặc 3 cột nên đọc lại rất nhẹ, khôn
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
+from decimal import Decimal
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
+from thuc_xuat.processor import Product, parse_qty
 
 CODE_HEADER = "Mã sản phẩm"
 NAME_HEADER = "Tên sản phẩm"
@@ -141,6 +144,31 @@ def load_sheet(path: str | Path) -> OutputSheet:
   finally:
     wb.close()
   return OutputSheet(path=file_path, rows=rows, has_name=name_i is not None)
+
+
+def restore_output_mapping(
+  products: list[Product], sheet: OutputSheet, previous: dict[int, str],
+) -> dict[int, str] | None:
+  """Ghép Excel đã lưu về STT gốc khi mã sản phẩm xác định được từng dòng."""
+  by_code = {product.code: product for product in products}
+  saved = {row.code: row.qty for row in sheet.rows}
+  if len(by_code) != len(products) or len(saved) != len(sheet.rows) or not saved.keys() <= by_code.keys():
+    return None
+  mapping = {}
+  for product in products:
+    qty = saved.get(product.code)
+    raw = previous.get(product.stt)
+    if qty is None:
+      if raw is not None and parse_qty(raw, product.ordered_qty, product.unit) is None:
+        mapping[product.stt] = raw
+      continue
+    if not math.isfinite(qty) or qty < 0:
+      return None
+    mapping[product.stt] = (
+      raw if raw is not None and parse_qty(raw, product.ordered_qty, product.unit) == qty
+      else f"={Decimal(str(qty)):f}"
+    )
+  return mapping
 
 
 def save_sheet(sheet: OutputSheet, path: str | Path | None = None) -> Path:

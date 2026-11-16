@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Cấu hình: chỉ Ollama local. Sửa config.json cạnh app nếu muốn đổi model."""
+"""Cấu hình app và các tùy chọn xử lý ảnh."""
 from __future__ import annotations
 
 import json
@@ -13,7 +13,7 @@ CONFIG_DIR = app_dir()
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
 DEFAULT_CONFIG: dict[str, Any] = {
-  "auto_open_output": True,
+  "auto_open_output": False,
   # Thư mục chứa file kết quả. Tên tương đối = nằm cạnh app; hoặc đường dẫn tuyệt đối.
   "output_dir": "KetQua",
   # True = file kết quả có thêm cột «Tên sản phẩm» để đối chiếu.
@@ -95,7 +95,7 @@ def get_ollama_settings() -> dict[str, Any]:
 
 def auto_open_output_folder() -> bool:
   cfg = load_config()
-  return cfg.get("auto_open_output", True)
+  return cfg["auto_open_output"]
 
 
 def _ensure_dir(path: Path) -> Path:

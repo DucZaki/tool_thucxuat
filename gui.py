@@ -2,34 +2,39 @@
 """GUI: Excel + ảnh phiếu → file Excel kết quả."""
 from __future__ import annotations
 
+import re
+import shutil
 import sys
 import threading
 import tkinter as tk
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from thuc_xuat.app_paths import app_dir
 from thuc_xuat.cancel import CancelledByUser
 from thuc_xuat.config import (
   auto_open_output_folder,
-  get_ollama_settings,
+  load_config,
   output_dir,
+  set_config_value,
 )
+from thuc_xuat.nim_client import DEFAULT_MODEL, MODELS, NimError, NimUsage, NimVision
 from thuc_xuat.image_match import pdn_from_excel
 from thuc_xuat.image_prep import warp_available
-from thuc_xuat.io_json import load_sidecar, save_mapping, update_sidecar_names
+from thuc_xuat.io_json import load_mapping, load_sidecar, save_mapping
 from thuc_xuat.output_edit import (
   OutputFormatError,
   OutputSheet,
-  list_outputs,
   load_sheet,
+  restore_output_mapping,
   save_sheet,
 )
 from thuc_xuat.pipeline import BatchResult, ProcessResult, process_batch_like_chat
 from thuc_xuat.processor import (
   build_output,
+  calculate_manual_qty,
   default_output_path,
   expected_qty,
   load_products,
@@ -47,6 +52,7 @@ from thuc_xuat.updater import (
   work_dir,
 )
 from thuc_xuat.version import __version__
+from thuc_xuat.vision_extract import VisionResume
 
 
 @dataclass
@@ -59,29 +65,27 @@ class ThucXuatApp(tk.Tk):
   def __init__(self) -> None:
     super().__init__()
     self.title(f"Thực Xuất v{__version__} — Ảnh phiếu + Excel → Excel nhập kho")
-    self.geometry("1150x780")
+    self.geometry("1260x810")
     self.minsize(950, 640)
 
     self.jobs: list[OrderJob] = []
     self.all_images: list[Path] = []
     self.results_by_excel: dict[Path, ProcessResult] = {}
+    self._ocr_resume = VisionResume()
+    self._manual_edits: dict[Path, dict[int, str | None]] = {}
     self.preview_job: OrderJob | None = None
+    self._standalone_sheet: OutputSheet | None = None
+    self._extra_output: Path | None = None
+    self._cell_editor: ttk.Entry | None = None
     self._cancel_event = threading.Event()
     self._busy = False
-    self._multi_ok = False
+    self._nim_requests = 0
     self._update_info: UpdateInfo | None = None
     self._checking_update = False
     self._updating = False
 
     self._build_ui()
     self.protocol("WM_DELETE_WINDOW", self._on_close)
-    # Ollama chỉ chạy khi app chạy: xóa shortcut tự khởi động cùng Windows.
-    try:
-      from thuc_xuat.ollama_client import remove_ollama_from_startup
-      remove_ollama_from_startup()
-    except Exception:
-      pass
-    self.after(400, self._startup_check_ollama)
     self.after(1500, self._check_update_silent)
 
   def report_callback_exception(self, exc, val, tb) -> None:  # noqa: ANN001
@@ -103,149 +107,192 @@ class ThucXuatApp(tk.Tk):
       pass
 
   def _build_ui(self) -> None:
-    top = ttk.LabelFrame(self, text="1. Chọn file", padding=10)
-    top.pack(fill=tk.X, padx=8, pady=8)
+    style = ttk.Style(self)
+    style.theme_use("clam")
+    ink, muted, accent = "#172b36", "#526773", "#176854"
+    canvas, white, line = "#eef3f4", "#ffffff", "#d6e1e5"
+    self.configure(background=canvas)
+    style.configure(".", font=("Segoe UI", 10), background=white, foreground=ink)
+    style.configure("Canvas.TFrame", background=canvas)
+    style.configure("Card.TFrame", background=white)
+    style.configure("Title.TLabel", background=canvas, font=("Segoe UI", 22, "bold"))
+    style.configure("Subtitle.TLabel", background=canvas, foreground=muted)
+    style.configure("Section.TLabel", font=("Segoe UI", 13, "bold"))
+    style.configure("Field.TLabel", font=("Segoe UI", 10, "bold"))
+    style.configure("Muted.TLabel", foreground=muted)
+    style.configure("Warning.TLabel", foreground="#965602")
+    style.configure("TButton", padding=(10, 6), background="#eaf0f2", bordercolor=line)
+    style.map("TButton", background=[("disabled", "#f3f5f6"), ("active", "#dfeaec")])
+    style.configure("Primary.TButton", background=accent, foreground=white, font=("Segoe UI", 10, "bold"))
+    style.map("Primary.TButton",
+              background=[("disabled", "#e2ebea"), ("active", "#125642")],
+              foreground=[("disabled", muted)])
+    style.configure("TEntry", padding=6, fieldbackground=white, bordercolor=line)
+    style.configure("TCombobox", padding=5, arrowsize=14, bordercolor=line)
+    style.map("TCombobox", fieldbackground=[("readonly", white)])
+    style.configure("Treeview", rowheight=28, background=white, fieldbackground=white, bordercolor=line)
+    style.configure("Treeview.Heading", font=("Segoe UI", 10, "bold"), padding=(6, 8), background="#e8f0f2")
+    style.map("Treeview", background=[("selected", "#d3ebe3")], foreground=[("selected", ink)])
+    style.configure("Horizontal.TProgressbar", thickness=5, background=accent, troughcolor=line, bordercolor=line)
 
-    excel_bar = ttk.Frame(top)
-    excel_bar.pack(fill=tk.X, pady=4)
-    ttk.Button(excel_bar, text="Thêm Excel gốc...", command=self.add_excels).pack(side=tk.LEFT)
-    ttk.Button(excel_bar, text="Xóa phiếu đã chọn", command=self.remove_selected_job).pack(
-      side=tk.LEFT, padx=6
-    )
-    self.clear_btn = ttk.Button(
-      excel_bar, text="Xóa tất cả", command=self.clear_all
-    )
-    self.clear_btn.pack(side=tk.LEFT)
-    self.excel_summary = ttk.Label(excel_bar, text="0 phiếu", foreground="#666")
-    self.excel_summary.pack(side=tk.LEFT, padx=10)
+    shell = ttk.Frame(self, style="Canvas.TFrame", padding=(18, 12))
+    shell.pack(fill=tk.BOTH, expand=True)
+    header = ttk.Frame(shell, style="Canvas.TFrame")
+    header.pack(fill=tk.X, pady=(0, 10))
+    ttk.Label(header, text="Thực Xuất", style="Title.TLabel").pack(side=tk.LEFT)
+    ttk.Label(header, text=f"NVIDIA NIM  ·  v{__version__}", style="Subtitle.TLabel").pack(side=tk.LEFT, padx=12)
+    ttk.Button(header, text="Hướng dẫn", command=self.show_help).pack(side=tk.RIGHT)
+    self.update_btn = ttk.Button(header, text="Kiểm tra cập nhật", command=self.on_update_click)
+    self.update_btn.pack(side=tk.RIGHT, padx=8)
+    self.nim_usage_label = ttk.Label(header, style="Subtitle.TLabel")
+    self.nim_usage_label.pack(side=tk.RIGHT, padx=(4, 8))
+    self._show_nim_usage(0, None)
 
-    self.job_list = tk.Listbox(top, height=4, exportselection=False)
-    self.job_list.pack(fill=tk.X, pady=4)
+    connection = ttk.Frame(shell, style="Card.TFrame", padding=(14, 10))
+    connection.pack(fill=tk.X, pady=(0, 12))
+    connection.columnconfigure(0, weight=1)
+    connection.columnconfigure(1, weight=1)
+    ttk.Label(connection, text="API key NVIDIA", style="Field.TLabel").grid(row=0, column=0, sticky="w")
+    ttk.Label(connection, text="Model đọc ảnh", style="Field.TLabel").grid(row=0, column=1, sticky="w", padx=(16, 0))
+    self.api_key_var = tk.StringVar()
+    key_entry = ttk.Entry(connection, textvariable=self.api_key_var, show="•", width=30)
+    key_entry.grid(row=1, column=0, sticky="ew", pady=(4, 1))
+    self._show_key = tk.BooleanVar(value=False)
+    ttk.Checkbutton(
+      connection, text="Hiện key", variable=self._show_key,
+      command=lambda: key_entry.configure(show="" if self._show_key.get() else "•"),
+    ).grid(row=1, column=2, padx=(10, 0))
+    ttk.Label(connection, text="Key dùng trong phiên này", style="Muted.TLabel").grid(row=2, column=0, sticky="w")
+    saved_model = load_config().get("nim_model", DEFAULT_MODEL)
+    model_label = next((label for label, model in MODELS.items() if model == saved_model), next(iter(MODELS)))
+    self.model_var = tk.StringVar(value=model_label)
+    model_picker = ttk.Combobox(connection, textvariable=self.model_var, values=list(MODELS), state="readonly", width=34)
+    model_picker.grid(row=1, column=1, sticky="ew", padx=(16, 0))
+    model_picker.bind("<<ComboboxSelected>>", lambda _event: set_config_value("nim_model", MODELS[self.model_var.get()]))
+
+    footer = ttk.Frame(shell, style="Canvas.TFrame")
+    footer.pack(side=tk.BOTTOM, fill=tk.X, pady=(10, 0))
+    self.status = ttk.Label(footer, text="Sẵn sàng", style="Subtitle.TLabel", anchor=tk.W)
+    self.status.pack(fill=tk.X)
+    self.progress = ttk.Progressbar(footer, mode="indeterminate")
+    self.progress.pack(fill=tk.X, pady=(5, 0))
+
+    workspace = ttk.Frame(shell, style="Canvas.TFrame")
+    workspace.pack(fill=tk.BOTH, expand=True)
+    workspace.rowconfigure(0, weight=1)
+    workspace.columnconfigure(1, weight=1)
+    inputs = ttk.Frame(workspace, style="Card.TFrame", padding=14)
+    inputs.grid(row=0, column=0, sticky="ns", padx=(0, 12))
+
+    ttk.Label(inputs, text="Phiếu và ảnh", style="Section.TLabel").pack(anchor=tk.W)
+    excel_header = ttk.Frame(inputs)
+    excel_header.pack(fill=tk.X, pady=(14, 4))
+    ttk.Label(excel_header, text="Excel gốc", style="Field.TLabel").pack(side=tk.LEFT)
+    self.excel_summary = ttk.Label(excel_header, text="0 phiếu", style="Muted.TLabel")
+    self.excel_summary.pack(side=tk.RIGHT)
+    self.job_list = self._input_list(inputs, height=4)
     self.job_list.bind("<<ListboxSelect>>", self._on_job_select)
+    excel_actions = ttk.Frame(inputs)
+    excel_actions.pack(fill=tk.X, pady=(5, 0))
+    ttk.Button(excel_actions, text="Thêm Excel…", command=self.add_excels).pack(side=tk.LEFT)
+    ttk.Button(excel_actions, text="Bỏ phiếu", command=self.remove_selected_job).pack(side=tk.RIGHT)
 
-    img_bar = ttk.Frame(top)
-    img_bar.pack(fill=tk.X, pady=4)
-    ttk.Label(img_bar, text="Ảnh phiếu (thêm tất cả ảnh của các phiếu):").pack(side=tk.LEFT)
-    ttk.Button(img_bar, text="Thêm ảnh...", command=self.add_images).pack(side=tk.LEFT, padx=8)
-    ttk.Button(img_bar, text="Xóa ảnh đã chọn", command=self.remove_selected_image).pack(
-      side=tk.LEFT
-    )
-    ttk.Button(
-      img_bar, text="Xóa tất cả ảnh", command=self.clear_all_images
-    ).pack(side=tk.LEFT, padx=6)
-    self.img_label = ttk.Label(img_bar, text="0 ảnh", foreground="#666")
-    self.img_label.pack(side=tk.LEFT, padx=10)
+    image_header = ttk.Frame(inputs)
+    image_header.pack(fill=tk.X, pady=(14, 4))
+    ttk.Label(image_header, text="Ảnh phiếu", style="Field.TLabel").pack(side=tk.LEFT)
+    self.img_label = ttk.Label(image_header, text="0 ảnh", style="Muted.TLabel")
+    self.img_label.pack(side=tk.RIGHT)
+    self.img_list = self._input_list(inputs, height=5)
+    self.img_list.configure(selectmode=tk.EXTENDED)
+    image_actions = ttk.Frame(inputs)
+    image_actions.pack(fill=tk.X, pady=(5, 0))
+    ttk.Button(image_actions, text="Thêm ảnh…", command=self.add_images).pack(side=tk.LEFT)
+    ttk.Button(image_actions, text="Bỏ ảnh", command=self.remove_selected_image).pack(side=tk.RIGHT)
 
-    self.img_list = tk.Listbox(top, height=4, exportselection=False)
-    self.img_list.pack(fill=tk.X, pady=4)
+    self.clear_btn = ttk.Button(inputs, text="Reset app", command=self.reset_app)
+    self.clear_btn.pack(fill=tk.X, pady=(6, 0))
+    actions = ttk.Frame(inputs)
+    actions.pack(fill=tk.X, side=tk.BOTTOM, pady=(12, 0))
+    self.stop_btn = ttk.Button(actions, text="Dừng", command=self.stop_process, state=tk.DISABLED)
+    self.stop_btn.pack(side=tk.RIGHT, padx=(6, 0))
+    self.run_btn = ttk.Button(actions, text="Đọc phiếu và xuất Excel", style="Primary.TButton", command=self.run_process)
+    self.run_btn.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-    action = ttk.LabelFrame(self, text="2. Xử lý", padding=10)
-    action.pack(fill=tk.X, padx=8, pady=4)
-
-    bar = ttk.Frame(action)
-    bar.pack(fill=tk.X)
-    self.run_btn = ttk.Button(
-      bar,
-      text="▶  Tạo file Excel (đọc ảnh + xuất kết quả)",
-      command=self.run_process,
-    )
-    self.run_btn.pack(side=tk.LEFT)
-    self.stop_btn = ttk.Button(
-      bar,
-      text="■  Dừng",
-      command=self.stop_process,
-      state=tk.DISABLED,
-    )
-    self.stop_btn.pack(side=tk.LEFT, padx=8)
-    ttk.Button(bar, text="Hướng dẫn", command=self.show_help).pack(side=tk.LEFT, padx=8)
-
-    opts = ttk.Frame(action)
-    opts.pack(fill=tk.X, pady=(8, 0))
-    ttk.Button(opts, text="Mở thư mục xuất", command=self.open_output_folder).pack(
-      side=tk.LEFT
-    )
-    self.update_btn = ttk.Button(
-      opts, text="Kiểm tra cập nhật", command=self.on_update_click
-    )
-    self.update_btn.pack(side=tk.LEFT, padx=12)
-
-    self.progress = ttk.Progressbar(action, mode="indeterminate")
-    self.progress.pack(fill=tk.X, pady=8)
-
-    preview = ttk.LabelFrame(
-      self,
-      text="3. Kết quả — nháy đúp 1 dòng để sửa ô «Đọc từ ảnh» (tự lưu lại Excel)",
-      padding=8,
-    )
-    preview.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
-
-    result_bar = ttk.Frame(preview)
-    result_bar.pack(fill=tk.X, pady=(0, 6))
-    self.reexport_btn = ttk.Button(
-      result_bar,
-      text="Xuất lại file kết quả",
-      command=self.reexport_results,
-      state=tk.DISABLED,
-    )
-    self.reexport_btn.pack(side=tk.LEFT)
-    ttk.Label(
-      result_bar, text="Dòng vàng = số bất thường", foreground="#b45309"
-    ).pack(side=tk.LEFT, padx=8)
-    self.folder_label = ttk.Label(result_bar, text="", foreground="#666")
-    self.folder_label.pack(side=tk.LEFT, padx=10)
-    self._refresh_folder_label()
+    preview = ttk.Frame(workspace, style="Card.TFrame", padding=14)
+    preview.grid(row=0, column=1, sticky="nsew")
+    result_header = ttk.Frame(preview)
+    result_header.pack(fill=tk.X, pady=(0, 10))
+    ttk.Label(result_header, text="Kết quả", style="Section.TLabel").pack(side=tk.LEFT)
+    ttk.Button(result_header, text="Thư mục xuất", command=self.open_output_folder).pack(side=tk.RIGHT)
+    self.reexport_btn = ttk.Button(result_header, text="Xuất lại", command=self.reexport_results, state=tk.DISABLED)
+    self.reexport_btn.pack(side=tk.RIGHT, padx=8)
 
     edit_bar = ttk.Frame(preview)
-    edit_bar.pack(fill=tk.X, pady=(0, 6))
-    ttk.Label(edit_bar, text="Sửa file đã xuất:").pack(side=tk.LEFT)
+    edit_bar.pack(fill=tk.X, pady=(0, 8))
+    ttk.Label(edit_bar, text="File kết quả", style="Field.TLabel").pack(side=tk.LEFT)
     self.output_var = tk.StringVar()
-    self.output_combo = ttk.Combobox(
-      edit_bar,
-      textvariable=self.output_var,
-      state="readonly",
-      width=54,
-    )
-    self.output_combo.pack(side=tk.LEFT, padx=6)
-    self.output_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_output_selected())
-    ttk.Button(
-      edit_bar, text="↻", width=3, command=lambda: self._refresh_output_files()
-    ).pack(side=tk.LEFT)
-    ttk.Button(
-      edit_bar, text="Mở để sửa...", command=self.open_output_editor
-    ).pack(side=tk.LEFT, padx=6)
-    ttk.Button(
-      edit_bar, text="Chọn file khác...", command=self.browse_output_file
-    ).pack(side=tk.LEFT)
+    self.output_combo = ttk.Combobox(edit_bar, textvariable=self.output_var, state="readonly", width=14)
+    self.output_combo.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=8)
+    self.output_combo.bind("<<ComboboxSelected>>", self._on_output_selected)
+    ttk.Button(edit_bar, text="Mở file…", command=self.browse_output_file).pack(side=tk.LEFT)
+    ttk.Button(edit_bar, text="Lưu bản sao…", command=self._save_output_copy).pack(side=tk.LEFT, padx=(6, 0))
     self._output_files: list[Path] = []
-    self._refresh_output_files()
 
+    details = ttk.Frame(preview)
+    details.pack(fill=tk.X, side=tk.BOTTOM, pady=(8, 0))
+    ttk.Label(details, text="Nháy đúp để sửa · Enter để lưu · Ví dụ: 3*8", style="Muted.TLabel").pack(side=tk.LEFT)
+    ttk.Label(details, text="Vàng: cần kiểm tra", style="Warning.TLabel").pack(side=tk.RIGHT)
+    self.folder_label = ttk.Label(preview, style="Muted.TLabel", anchor=tk.W, width=1)
+    self.folder_label.pack(fill=tk.X, side=tk.BOTTOM, pady=(4, 0))
+    self._refresh_folder_label()
+
+    table = ttk.Frame(preview)
+    table.pack(fill=tk.BOTH, expand=True)
+    table.rowconfigure(0, weight=1)
+    table.columnconfigure(0, weight=1)
     cols = ("stt", "code", "name", "unit", "ordered", "raw", "qty")
-    self.tree = ttk.Treeview(preview, columns=cols, show="headings")
-    for c, t, w in [
-      ("stt", "STT", 45),
-      ("code", "Mã SP", 120),
-      ("name", "Tên hàng", 330),
-      ("unit", "ĐVT", 110),
-      ("ordered", "Đặt", 50),
-      ("raw", "Đọc từ ảnh", 110),
-      ("qty", "Thực xuất", 70),
-    ]:
-      self.tree.heading(c, text=t)
-      self.tree.column(c, width=w, anchor=tk.CENTER if c in ("stt", "ordered", "qty") else tk.W)
-
-    self.tree.tag_configure("skip", foreground="#999")
-    self.tree.tag_configure("edited", background="#eef7ee")
-    self.tree.tag_configure("warn", background="#fff4d6")
+    self.tree = ttk.Treeview(table, columns=cols, show="headings", height=10)
+    for column, label, width in (
+      ("stt", "STT", 45), ("code", "Mã SP", 106), ("name", "Tên hàng", 270),
+      ("unit", "ĐVT", 90), ("ordered", "Đặt", 48), ("raw", "Đọc từ ảnh", 96),
+      ("qty", "Thực xuất", 82),
+    ):
+      self.tree.heading(column, text=label)
+      self.tree.column(column, width=width, minwidth=width, stretch=column == "name",
+                       anchor=tk.CENTER if column in ("stt", "ordered", "qty") else tk.W)
+    self.tree.tag_configure("skip", foreground="#637580", background="#f5f8f9")
+    self.tree.tag_configure("warn", background="#fff0cc")
     self.tree.bind("<Double-1>", self._edit_selected_row)
-
-    scroll = ttk.Scrollbar(preview, orient=tk.VERTICAL, command=self.tree.yview)
-    self.tree.configure(yscrollcommand=scroll.set)
-    self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-    scroll.pack(side=tk.RIGHT, fill=tk.Y)
-
-    self.status = ttk.Label(self, text="Sẵn sàng", padding=8, relief=tk.SUNKEN)
-    self.status.pack(fill=tk.X, side=tk.BOTTOM)
+    vscroll = ttk.Scrollbar(table, orient=tk.VERTICAL, command=self.tree.yview)
+    hscroll = ttk.Scrollbar(table, orient=tk.HORIZONTAL, command=self.tree.xview)
+    self.tree.configure(yscrollcommand=vscroll.set, xscrollcommand=hscroll.set)
+    self.tree.grid(row=0, column=0, sticky="nsew")
+    vscroll.grid(row=0, column=1, sticky="ns")
+    hscroll.grid(row=1, column=0, sticky="ew")
     self._update_status_ready()
+
+  @staticmethod
+  def _input_list(parent: ttk.Frame, height: int) -> tk.Listbox:
+    frame = ttk.Frame(parent)
+    frame.pack(fill=tk.X)
+    listing = tk.Listbox(
+      frame, height=height, width=27, exportselection=False,
+      font=("Segoe UI", 10), highlightthickness=1, highlightbackground="#d6e1e5",
+      borderwidth=0, foreground="#172b36", selectbackground="#d3ebe3", selectforeground="#172b36",
+    )
+    scrollbar = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=listing.yview)
+    listing.configure(yscrollcommand=scrollbar.set)
+    listing.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+    return listing
+
+  def _show_nim_usage(self, previous: int, usage: NimUsage | None) -> None:
+    self._nim_requests = previous + (usage.request_count if usage else 0)
+    remaining = "—"
+    if usage is not None and usage.remaining is not None:
+      remaining = str(usage.remaining)
+    suffix = " · HTTP 429" if usage is not None and usage.http_status == 429 else ""
+    self.nim_usage_label.config(text=f"API · {self._nim_requests} gọi · còn {remaining}{suffix}")
 
   def _selected_job_index(self) -> int | None:
     sel = self.job_list.curselection()
@@ -258,8 +305,11 @@ class ThucXuatApp(tk.Tk):
     return self.jobs[idx]
 
   def _job_label(self, job: OrderJob) -> str:
-    pdn = pdn_from_excel(job.excel_path) or "?"
-    return f"{job.excel_path.name} — {job.product_count} SP — {pdn}"
+    return f"{self._order_name(job.excel_path)} · {job.product_count} SP"
+
+  @staticmethod
+  def _order_name(excel: Path) -> str:
+    return pdn_from_excel(excel) or excel.stem
 
   def _refresh_job_list(self, select_index: int | None = None) -> None:
     self.job_list.delete(0, tk.END)
@@ -275,91 +325,36 @@ class ThucXuatApp(tk.Tk):
       self._on_job_select()
     else:
       self.preview_job = None
+      self._standalone_sheet = None
       self._refresh_image_list()
+      self._refresh_output_files()
       self._fill_preview()
 
   def _on_job_select(self, _event=None) -> None:
     job = self._selected_job()
     self.preview_job = job
+    self._standalone_sheet = None
     self._refresh_image_list()
+    result = self.results_by_excel.get(job.excel_path) if job else None
+    path = result.output_path if result else None
+    self._refresh_output_files(path)
     self._fill_preview()
 
   def _refresh_image_list(self) -> None:
+    selected = self.img_list.curselection()
+    scroll = self.img_list.yview()[0]
     self.img_list.delete(0, tk.END)
-    for p in self.all_images:
-      self.img_list.insert(tk.END, p.name)
-    n_excel = len(self.jobs)
-    self.img_label.config(text=f"{len(self.all_images)} ảnh / {n_excel} phiếu")
+    for photo in self.all_images:
+      self.img_list.insert(tk.END, photo.name)
+    for index in selected:
+      if index < len(self.all_images):
+        self.img_list.selection_set(index)
+    self.img_list.yview_moveto(scroll)
+    self.img_label.config(text=f"{len(self.all_images)} ảnh")
 
   def _on_close(self) -> None:
-    """Đóng app: tắt Ollama nếu chính app đã bật (model chỉ chạy khi app chạy)."""
-    try:
-      from thuc_xuat.ollama_client import stop_server
-      stop_server()
-    except Exception:
-      pass
+    self._cancel_event.set()
     self.destroy()
-
-  def _startup_check_ollama(self) -> None:
-    """Mở app là bật Ollama + kiểm tra model."""
-    model = get_ollama_settings()["model"]
-
-    def on_status(msg: str) -> None:
-      self.after(0, lambda m=msg: self.status.config(text=m))
-
-    def worker() -> None:
-      from thuc_xuat.ollama_client import OllamaError, ensure_server, has_model
-
-      try:
-        server = ensure_server(on_status=on_status)
-      except OllamaError as exc:
-        first = str(exc).splitlines()[0]
-        self.after(0, lambda e=first: self.status.config(text=f"Ollama: {e}"))
-        self.after(0, lambda e=exc: messagebox.showwarning("Chưa chạy được Ollama", str(e)))
-        return
-      try:
-        ready = has_model(model)
-      except OllamaError:
-        ready = False
-      if ready:
-        text = (
-          f"Ollama sẵn sàng — model {model}"
-          if server == "running"
-          else f"Đã tự bật Ollama — model {model}"
-        )
-        self.after(0, lambda: self.status.config(text=text))
-        return
-      self.after(0, lambda: self._offer_pull_model(model))
-
-    threading.Thread(target=worker, daemon=True).start()
-
-  def _offer_pull_model(self, model: str) -> None:
-    if not messagebox.askyesno(
-      "Thiếu model",
-      f"Ollama đã chạy nhưng chưa có model «{model}».\n\n"
-      "Tải ngay bây giờ? (khoảng 3 GB, chỉ tải 1 lần)",
-    ):
-      self.status.config(
-        text=f"Thiếu model {model} — chạy: ollama pull {model}"
-      )
-      return
-    self.status.config(text=f"Đang tải model {model}...")
-
-    def on_status(msg: str) -> None:
-      self.after(0, lambda m=msg: self.status.config(text=m))
-
-    def worker() -> None:
-      from thuc_xuat.ollama_client import OllamaError, pull_model
-
-      try:
-        pull_model(model, on_status=on_status)
-      except OllamaError as exc:
-        self.after(0, lambda: self.status.config(text="Không tải được model"))
-        self.after(0, lambda e=exc: messagebox.showerror("Lỗi tải model", str(e)))
-        return
-      self.after(0, lambda: self.status.config(text=f"Đã tải xong model {model}"))
-
-    threading.Thread(target=worker, daemon=True).start()
 
   def _refresh_folder_label(self) -> None:
     try:
@@ -369,32 +364,67 @@ class ThucXuatApp(tk.Tk):
       return
     self.folder_label.config(text=f"Thư mục xuất: {folder}")
 
-  def _refresh_output_files(self, select: str | None = None) -> None:
-    """Nạp danh sách file .xlsx trong thư mục xuất vào ô chọn."""
-    try:
-      files = list_outputs(output_dir())
-    except OSError:
-      files = []
+  def _job_output(self, job: OrderJob) -> Path | None:
+    result = self.results_by_excel.get(job.excel_path)
+    if result is not None and result.output_path.is_file():
+      return result.output_path
+    folder = output_dir()
+    for include_name in (False, True):
+      path = default_output_path(job.excel_path, out_dir=folder, include_name=include_name)
+      if path.is_file():
+        return path
+    return None
+
+  def _refresh_output_files(self, select: Path | None = None) -> None:
+    """Chỉ hiện một file kết quả cho mỗi phiếu đang mở và file mở tay."""
+    files = [path for job in self.jobs if (path := self._job_output(job)) is not None]
+    if self._extra_output is not None and self._extra_output.is_file():
+      files.append(self._extra_output)
+    files = list(dict.fromkeys(files))
     self._output_files = files
-    names = [p.name for p in files]
-    self.output_combo["values"] = names
-    current = (select or self.output_var.get()).strip()
-    if current in names:
-      self.output_var.set(current)
-    elif names:
-      self.output_var.set(names[0])
+    self.output_combo["values"] = [p.name for p in files]
+    if select in files:
+      self.output_combo.current(files.index(select))
     else:
       self.output_var.set("")
 
-  def _on_output_selected(self) -> None:
-    name = self.output_var.get().strip()
-    path = next((p for p in getattr(self, "_output_files", []) if p.name == name), None)
-    if path is not None:
-      self.status.config(text=f"Đã chọn để sửa: {path}")
+  def _on_output_selected(self, _event=None) -> None:
+    index = self.output_combo.current()
+    if 0 <= index < len(self._output_files):
+      path = self._output_files[index]
+      job = next((job for job in self.jobs if self._job_output(job) == path), None)
+      if not self._show_output(path, job):
+        previous = self._standalone_sheet.path if self._standalone_sheet else (
+          self._job_output(self.preview_job) if self.preview_job else None
+        )
+        self._refresh_output_files(previous)
 
-  def _output_path_selected(self) -> Path | None:
-    name = self.output_var.get().strip()
-    return next((p for p in getattr(self, "_output_files", []) if p.name == name), None)
+  def _save_output_copy(self) -> None:
+    job = self.preview_job
+    result = self.results_by_excel.get(job.excel_path) if job else None
+    path = self._standalone_sheet.path if self._standalone_sheet else (
+      result.output_path if result else None
+    )
+    if path is None:
+      messagebox.showinfo("Chưa có file", "Hãy chọn một file kết quả để lưu bản sao.")
+      return
+    picked = filedialog.asksaveasfilename(
+      parent=self, title="Lưu bản sao", initialdir=str(path.parent),
+      initialfile=f"{path.stem}_sua.xlsx", defaultextension=".xlsx",
+      filetypes=[("Excel", "*.xlsx")],
+    )
+    if not picked or Path(picked).resolve() == path.resolve():
+      return
+    try:
+      target = Path(picked)
+      shutil.copy2(path, target)
+      sidecar = path.with_suffix(".json")
+      if sidecar.is_file():
+        shutil.copy2(sidecar, target.with_suffix(".json"))
+    except OSError as exc:
+      messagebox.showerror("Không lưu được bản sao", str(exc))
+      return
+    self.status.config(text=f"Đã lưu bản sao {target.name}")
 
   def browse_output_file(self) -> None:
     """Chọn 1 file kết quả ở bất kỳ đâu trên máy để sửa."""
@@ -406,58 +436,59 @@ class ThucXuatApp(tk.Tk):
     )
     if not path:
       return
-    self._open_editor_for(Path(path))
+    target = Path(path).resolve()
+    job = next((job for job in self.jobs if self._job_output(job) == target), None)
+    if self._show_output(target, job):
+      if job is None:
+        self._extra_output = target
+      self._refresh_output_files(target)
 
-  def open_output_editor(self) -> None:
-    """Mở cửa sổ sửa file đã chọn trong danh sách thư mục xuất."""
-    path = self._output_path_selected()
-    if path is None:
-      if not self._output_files:
-        messagebox.showinfo(
-          "Chưa có file",
-          "Thư mục xuất chưa có file Excel nào.\n\n"
-          "Bấm «Tạo file Excel» trước, hoặc dùng «Chọn file khác...» "
-          "để mở một file đã xuất trước đó.",
-        )
-        return
-      messagebox.showinfo("Chưa chọn file", "Chọn 1 file trong danh sách rồi bấm lại.")
-      return
-    self._open_editor_for(path)
-
-  def _open_editor_for(self, path: Path) -> None:
-    try:
-      sheet = load_sheet(path)
-    except OutputFormatError as exc:
-      messagebox.showerror("Không mở được file", str(exc))
-      return
-    if not sheet.rows:
-      messagebox.showinfo(
-        "File trống",
-        f"«{path.name}» không có dòng nào để sửa.",
-      )
-      return
-    # Luôn hiện Tên hàng trong cửa sổ sửa — lấy từ JSON phụ, Excel gốc, hoặc
-    # phiếu đang mở trong phiên. File Excel xuất ra chỉ còn 2 cột.
-    names, source = load_sidecar(path.with_suffix(".json"))
-    if not names and source:
+  def _show_output(self, path: Path, job: OrderJob | None) -> bool:
+    """Mở file trong bảng hiện tại; lấy STT và ĐVT từ Excel gốc khi ghép được."""
+    result = self.results_by_excel.get(job.excel_path) if job else None
+    sheet = None
+    if result is None or result.output_path != path:
       try:
-        from thuc_xuat.processor import load_products
-        for p in load_products(source):
-          names.setdefault(p.code, p.name)
-      except Exception:
-        pass
-    if not names:
-      for job in self.jobs:
+        sheet = load_sheet(path)
+      except OutputFormatError as exc:
+        messagebox.showerror("Không mở được file", str(exc))
+        self._fill_preview()
+        return False
+      sidecar = path.with_suffix(".json")
+      names, source = load_sidecar(sidecar)
+      source_path = job.excel_path if job else source
+      if source_path:
         try:
-          from thuc_xuat.processor import load_products
-          for p in load_products(job.excel_path):
-            names.setdefault(p.code, p.name)
+          products = load_products(source_path)
         except Exception:
-          continue
-    sheet.apply_names(names)
-    # Cửa sổ sửa luôn hiển thị cột Tên hàng (dù file chỉ có 2 cột).
-    sheet.show_name = True
-    OutputEditor(self, sheet)
+          products = []
+        sheet.apply_names({p.code: p.name for p in products})
+        if job and products:
+          try:
+            mapping = load_mapping(sidecar)
+          except (OSError, ValueError, TypeError):
+            mapping = {}
+          restored = restore_output_mapping(products, sheet, mapping)
+          if restored is not None:
+            included, skipped = build_output(products, restored)
+            self.results_by_excel[job.excel_path] = ProcessResult(
+              job.excel_path, path, len(products), len(restored), included,
+              skipped, restored, sheet.has_name,
+            )
+            sheet = None
+      if sheet is not None:
+        sheet.apply_names(names)
+
+    self.preview_job = job
+    self._standalone_sheet = sheet
+    self.job_list.selection_clear(0, tk.END)
+    if job is not None:
+      index = self.jobs.index(job)
+      self.job_list.selection_set(index)
+      self.job_list.activate(index)
+    self._fill_preview()
+    self.status.config(text=f"Đang sửa {path.name} — nháy đúp một dòng rồi nhấn Enter để lưu")
+    return True
 
   def open_output_folder(self) -> None:
     """Mở thư mục chứa file kết quả trong Explorer (tạo nếu chưa có)."""
@@ -649,15 +680,12 @@ class ThucXuatApp(tk.Tk):
       "App sẽ đóng và mở lại bản mới trong vài giây.\n\n"
       "Nếu không thấy app mở lại, hãy mở ThucXuatTool.exe trong thư mục cũ.",
     )
-    try:
-      from thuc_xuat.ollama_client import stop_server
-      stop_server()
-    except Exception:
-      pass
     self.after(300, self.destroy)
 
   def reexport_results(self) -> None:
     """Xuất lại các phiếu đã xử lý theo tuỳ chọn cột hiện tại (không đọc lại ảnh)."""
+    if self._busy:
+      return
     if not self.results_by_excel:
       messagebox.showinfo("Chưa có kết quả", "Bấm «Tạo file Excel» trước.")
       return
@@ -696,8 +724,7 @@ class ThucXuatApp(tk.Tk):
 
     if not written:
       return
-    self._fill_preview()
-    self._refresh_output_files()
+    self._on_job_select()
     if auto_open_output_folder():
       reveal_outputs(written)
     kind = "kèm Tên sản phẩm" if include_name else "2 cột (Mã + Thực xuất)"
@@ -725,6 +752,8 @@ class ThucXuatApp(tk.Tk):
       )
 
   def add_excels(self) -> None:
+    if self._busy:
+      return
     paths = filedialog.askopenfilenames(
       title="Chọn Excel gốc (có thể nhiều phiếu)",
       filetypes=[("Excel", "*.xlsx")],
@@ -771,54 +800,61 @@ class ThucXuatApp(tk.Tk):
       self._update_status_ready()
 
   def remove_selected_job(self) -> None:
+    if self._busy:
+      return
     idx = self._selected_job_index()
     if idx is None:
       return
     removed = self.jobs.pop(idx)
     self.results_by_excel.pop(removed.excel_path, None)
+    self._manual_edits.pop(removed.excel_path, None)
     self._refresh_job_list(select_index=min(idx, len(self.jobs) - 1) if self.jobs else None)
     if not self.results_by_excel:
       self.reexport_btn.config(state=tk.DISABLED)
     self._update_status_ready()
 
-  def clear_all(self) -> None:
-    """Bỏ toàn bộ Excel + ảnh đã thêm (không xóa file trên máy)."""
+  def reset_app(self) -> None:
+    """Đặt lại phiên xử lý, giữ file đã lưu và cấu hình kết nối."""
     if self._busy:
       messagebox.showinfo(
         "Đang xử lý",
-        "Chờ app đọc ảnh xong (hoặc bấm «Dừng») rồi hãy xóa danh sách.",
+        "Chờ app đọc ảnh xong hoặc bấm «Dừng» trước khi reset.",
       )
       return
-    if not self.jobs and not self.all_images:
-      self.status.config(text="Danh sách đang trống")
-      return
-    n_jobs, n_images = len(self.jobs), len(self.all_images)
-    if not messagebox.askyesno(
-      "Xóa tất cả",
-      f"Bỏ {n_jobs} file Excel và {n_images} ảnh khỏi danh sách?\n\n"
-      "• Chỉ xóa khỏi app — KHÔNG xóa file trên máy.\n"
-      "• File kết quả đã tạo trong thư mục xuất vẫn giữ nguyên.\n"
-      "• Bảng xem trước sẽ trống để bạn chọn phiếu mới.",
+    if (self.jobs or self.all_images or self._extra_output is not None) and not messagebox.askyesno(
+      "Reset app",
+      "Bắt đầu lượt mới và bỏ Excel, ảnh, bảng kết quả đang mở?\n\n"
+      "File đã lưu, API key và model đang chọn được giữ lại.",
+      parent=self,
     ):
       return
 
     self.jobs.clear()
     self.all_images.clear()
     self.results_by_excel.clear()
+    self._ocr_resume = VisionResume()
+    self._manual_edits.clear()
     self.preview_job = None
+    self._standalone_sheet = None
+    self._extra_output = None
     self.job_list.delete(0, tk.END)
     self.img_list.delete(0, tk.END)
     self.excel_summary.config(text="0 phiếu")
-    self.img_label.config(text="0 ảnh / 0 phiếu")
+    self.img_label.config(text="0 ảnh")
+    self.progress.stop()
+    self.progress.config(value=0)
+    self._cancel_event.clear()
     self.reexport_btn.config(state=tk.DISABLED)
+    self._refresh_output_files()
     self._fill_preview()
-    self.status.config(
-      text=f"Đã xóa {n_jobs} Excel + {n_images} ảnh — thêm phiếu mới để bắt đầu"
-    )
+    self.tree.xview_moveto(0)
+    self.status.config(text="Đã reset — thêm Excel gốc và ảnh để bắt đầu lượt mới.")
 
   def add_images(self) -> None:
+    if self._busy:
+      return
     paths = filedialog.askopenfilenames(
-      title="Chọn ảnh phiếu (có thể nhiều trang, nhiều phiếu)",
+      title="Chọn tất cả ảnh của các phiếu",
       filetypes=[
         ("Ảnh", "*.png;*.jpg;*.jpeg;*.webp;*.bmp"),
         ("Tất cả", "*.*"),
@@ -826,18 +862,14 @@ class ThucXuatApp(tk.Tk):
     )
     if not paths:
       return
-    existing = {p.resolve() for p in self.all_images}
+    existing = set(self.all_images)
     added = 0
     for p in paths:
-      pp = Path(p)
-      try:
-        key = pp.resolve()
-      except OSError:
-        key = pp
-      if key in existing:
+      photo = Path(p).resolve()
+      if photo in existing:
         continue
-      existing.add(key)
-      self.all_images.append(pp)
+      existing.add(photo)
+      self.all_images.append(photo)
       added += 1
     self._refresh_image_list()
     self._update_status_ready()
@@ -845,14 +877,19 @@ class ThucXuatApp(tk.Tk):
       self.status.config(
         text=f"Đã thêm {added} ảnh — tổng {len(self.all_images)} ảnh"
       )
+    else:
+      self.status.config(text="Các ảnh đã chọn đã có trong danh sách.")
 
   def remove_selected_image(self) -> None:
+    if self._busy:
+      return
     sel = self.img_list.curselection()
     if not sel:
       return
     for idx in reversed(sel):
-      del self.all_images[idx]
-      self.img_list.delete(idx)
+      self.all_images.pop(idx)
+    self.img_list.selection_clear(0, tk.END)
+    self._refresh_image_list()
     self._update_status_ready()
 
   def clear_all_images(self) -> None:
@@ -885,8 +922,8 @@ class ThucXuatApp(tk.Tk):
     messagebox.showinfo(
       "Cách dùng",
       "1. Thêm file DanhSachChiTietDatHangNhap_*.xlsx (1 hoặc nhiều phiếu)\n"
-      "2. Thêm TẤT CẢ ảnh chụp phiếu\n"
-      "3. Bấm «Tạo file Excel»\n\n"
+      "2. Thêm tất cả ảnh. App tự nhận diện ảnh thuộc phiếu nào.\n"
+      "3. Bấm «Đọc phiếu và xuất Excel» để chạy cả lô.\n\n"
       "AI đọc ảnh, lấy STT → Thực xuất, rồi tạo file:\n"
       "Mã sản phẩm + Thực xuất.\n\n"
       "File kết quả nằm trong thư mục «KetQua» cạnh app.\n"
@@ -901,43 +938,25 @@ class ThucXuatApp(tk.Tk):
       "• Không có dấu nhân: giữ nguyên số, bỏ chữ:\n"
       "    1T → 1, 4T → 4, 12 → 12, 30cm → 30\n"
       "  (KHÔNG nhân theo hệ số trong ĐVT)\n"
-      "• Chỉ tick ✓ → lấy số lượng đặt\n\n"
+      "• Nét giống ✓ trên ảnh được coi là X → bỏ dòng\n"
+      "• Gặp ảnh lỗi: bấm lại nút đọc để thử những ảnh chưa đọc được.\n\n"
       "Dòng tô VÀNG = số xuất lớn bất thường so với SL đặt\n"
       "(nghi AI đọc sai) — nháy đúp để sửa tay.\n"
       "Sửa file ĐÃ XUẤT (kể cả file của lần chạy trước):\n"
-      "ô «Sửa file đã xuất» ở khung 3 → chọn file → «Mở để sửa»\n"
-      "→ nháy đúp để sửa số, Delete để xóa dòng, Ctrl+S để lưu.\n"
-      "Lưu xong có thể «Lưu thành file mới» nếu muốn giữ bản cũ.\n"
-      "Nút «Xóa tất cả» bỏ hết Excel + ảnh khỏi danh sách\n"
-      "(không xóa file trên máy).\n\n"
-      "AI: Ollama local (gemma3:4b) — không cần mạng.\n"
-      f"Đang dùng model: {get_ollama_settings()['model']}.\n"
-      "App tự bật Ollama và tự kiểm tra model khi mở.\n"
-      "Đổi model: sửa «ollama_model» trong config.json cạnh app\n"
-      "(vd gemma3:12b chính xác hơn, cần tải trước).\n\n"
+      "Chọn file ở khung 3 để hiện ngay trong bảng bên dưới.\n"
+      "Nháy đúp một dòng, nhập 3*8, 10+2, 12/3 hoặc số rồi nhấn Enter để lưu.\n"
+      "Nút «Reset app» đóng dữ liệu đang mở để bắt đầu lượt mới.\n"
+      "File trên máy, API key và model đang chọn được giữ lại.\n\n"
+      "AI: dán API key NVIDIA ở đầu cửa sổ và chọn model.\n"
+      "Tự động ưu tiên Super VL và chuyển sang Nano Omni nếu endpoint gặp lỗi tạm thời.\n"
+      "Khi chạy, ảnh đã tiền xử lý được gửi qua mạng đến NVIDIA NIM.\n\n"
       "Cập nhật: app tự kiểm tra bản mới khi mở (cần mạng).\n"
       "Có bản mới thì nút «Cập nhật lên v...» hiện ra — bấm là\n"
       "app tự tải, thay thế và mở lại. File trong KetQua giữ nguyên.\n\n"
-      "Lưu ý: model 4b đọc tốt nhưng có thể sai vài dòng.\n"
+      "Kiểm tra kết quả OCR trước khi nhập vào KiotViet.\n"
       "Xem bảng «Kết quả»; nháy đúp 1 dòng để sửa «Đọc từ ảnh»\n"
       "(app tự lưu lại file Excel).",
     )
-
-  def _warn_multi_order_local(self) -> bool:
-    """Nhắc 1 lần/phiên khi chạy nhiều phiếu cùng lúc."""
-    if len(self.jobs) <= 1 or self._multi_ok:
-      return True
-    ok = messagebox.askyesno(
-      "Nhiều phiếu trong 1 lần chạy",
-      f"{len(self.jobs)} phiếu + {len(self.all_images)} ảnh.\n\n"
-      "App tự chia ảnh về từng phiếu: đọc tên 3 sản phẩm đầu trang rồi so với "
-      "danh sách từng phiếu (kèm mã PDN nếu ảnh có trên header).\n\n"
-      "Nếu một trang bị chia nhầm phiếu, phiếu đó sẽ thiếu dòng — "
-      "kiểm tra bảng «Kết quả» sau khi chạy.\n\n"
-      "Chỉ hỏi 1 lần mỗi phiên.\n\nTiếp tục?",
-    )
-    self._multi_ok = bool(ok)
-    return ok
 
   def stop_process(self) -> None:
     if not self._busy:
@@ -956,20 +975,29 @@ class ThucXuatApp(tk.Tk):
       messagebox.showwarning("Thiếu ảnh", "Thêm ảnh phiếu trước.")
       return
 
-    if not self._warn_multi_order_local():
-      return
+    excels = [job.excel_path for job in self.jobs]
 
-    from thuc_xuat.config import get_ollama_settings
+    previous_requests = self._nim_requests
+
+    def on_usage(usage: NimUsage) -> None:
+      self.after(0, self._show_nim_usage, previous_requests, usage)
+
+    try:
+      nim = NimVision(MODELS[self.model_var.get()], self.api_key_var.get(), on_usage=on_usage)
+    except NimError as exc:
+      messagebox.showwarning("Cấu hình NVIDIA NIM", str(exc))
+      return
 
     self._busy = True
     self._cancel_event.clear()
     self.run_btn.config(state=tk.DISABLED)
     self.stop_btn.config(state=tk.NORMAL)
     self.progress.start(12)
-    self.status.config(text=f"Đang gọi Ollama ({get_ollama_settings()['model']})... đọc từng ảnh")
+    self.status.config(text=f"Đang đọc ảnh với {self.model_var.get()} qua NVIDIA NIM…")
 
-    excels = [j.excel_path for j in self.jobs]
     images = list(self.all_images)
+    resume = self._ocr_resume
+    manual_edits = {path: dict(edits) for path, edits in self._manual_edits.items()}
     cancel_event = self._cancel_event
     out_dir = output_dir()
     include_name = False
@@ -989,6 +1017,9 @@ class ThucXuatApp(tk.Tk):
           cancel_event=cancel_event,
           output_dir=out_dir,
           include_name=include_name,
+          nim=nim,
+          resume=resume,
+          manual_edits=manual_edits,
         )
       except Exception as exc:
         err = exc
@@ -1011,9 +1042,14 @@ class ThucXuatApp(tk.Tk):
         messagebox.showinfo("Đã dừng", "Đã hủy đọc ảnh theo yêu cầu.")
         return
       self.status.config(text="Lỗi")
-      messagebox.showerror("Lỗi", str(err))
+      messagebox.showerror(
+        "Lỗi",
+        f"{err}\n\nBấm «Đọc phiếu và xuất Excel» để thử lại. Kết quả của ảnh đã đọc được sẽ dùng lại.",
+      )
       return
     assert batch is not None
+    if not batch.pending_images and not batch.errors:
+      self._ocr_resume = VisionResume()
 
     for result in batch.results:
       self.results_by_excel[result.source_path] = result
@@ -1027,15 +1063,26 @@ class ThucXuatApp(tk.Tk):
       except OSError:
         pass  # không lưu được JSON phụ cũng không ảnh hưởng file Excel
 
-    self._fill_preview()
+    if self._selected_job() is None and self.jobs:
+      self.job_list.selection_set(0)
+    self._on_job_select()
     self.reexport_btn.config(
       state=tk.NORMAL if self.results_by_excel else tk.DISABLED
     )
-    self._refresh_output_files()
-
-
     if batch.ok_count and auto_open_output_folder():
       reveal_outputs([r.output_path for r in batch.results])
+
+    issue_text = ""
+    if batch.warnings:
+      lines = [f"• {warning}" for warning in batch.warnings[:8]]
+      if len(batch.warnings) > 8:
+        lines.append(f"• Và {len(batch.warnings) - 8} ảnh khác cần kiểm tra.")
+      issue_text = "\n\nẢnh cần kiểm tra:\n" + "\n".join(lines)
+    if batch.pending_images:
+      issue_text += (
+        f"\n\nCòn {len(batch.pending_images)} ảnh cần đọc lại. "
+        "Bấm «Đọc phiếu và xuất Excel» để chạy tiếp."
+      )
 
     if batch.fail_count and batch.ok_count:
       self.status.config(text=f"Xong: {batch.ok_count} OK, {batch.fail_count} lỗi")
@@ -1046,45 +1093,31 @@ class ThucXuatApp(tk.Tk):
       messagebox.showwarning(
         "Hoàn tất một phần",
         f"Thành công ({batch.ok_count}):\n{ok_lines}\n\n"
-        f"Lỗi ({batch.fail_count}):\n{err_lines}",
+        f"Lỗi ({batch.fail_count}):\n{err_lines}{issue_text}",
       )
       return
 
     if batch.fail_count:
       self.status.config(text="Lỗi")
       err_lines = "\n".join(f"• {p.name}: {msg}" for p, msg in batch.errors)
-      messagebox.showerror("Lỗi", err_lines)
+      messagebox.showerror("Lỗi", err_lines + issue_text)
       return
 
     total_rows = sum(len(r.included) for r in batch.results)
-    mode = "Mã + Thực xuất"
-    if len(batch.results) == 1:
-      r = batch.results[0]
-      self.status.config(text=f"Xong: {len(r.included)} dòng → {r.output_path.name}")
-      messagebox.showinfo(
-        "Hoàn tất",
-        f"Đã tạo file:\n{r.output_path}\n\n"
-        f"• {r.product_count} SP trong Excel gốc\n"
-        f"• {r.extracted_stt} STT đọc từ ảnh\n"
-        f"• {len(r.included)} dòng xuất file\n"
-        f"• {len(r.skipped)} dòng bỏ (X/không có)\n"
-        f"• Cột: {mode}",
-      )
-      return
-
-    self.status.config(text=f"Xong: {batch.ok_count} phiếu, {total_rows} dòng")
-    lines = "\n".join(
-      f"• {r.output_path.name} — {len(r.included)} dòng" for r in batch.results
-    )
-    messagebox.showinfo(
-      "Hoàn tất",
-      f"Đã tạo {batch.ok_count} file ({mode}) trong:\n"
-      f"{batch.results[0].output_path.parent}\n\n{lines}\n\nTổng {total_rows} dòng xuất.",
-    )
+    self.status.config(text=f"Đã xuất {batch.ok_count} file · {total_rows} dòng. Kiểm tra số lượng trong bảng kết quả.")
+    if issue_text:
+      messagebox.showwarning("Đã xuất Excel, còn ảnh cần kiểm tra", f"Đã xuất {batch.ok_count} file.{issue_text}")
 
   def _fill_preview(self) -> None:
+    self._cancel_cell_editor()
     for item in self.tree.get_children():
       self.tree.delete(item)
+
+    if self._standalone_sheet is not None:
+      for position, row in enumerate(self._standalone_sheet.rows, 1):
+        qty = row.qty if row.qty is not None else ""
+        self.tree.insert("", tk.END, values=(position, row.code, row.name, "", "", "", qty))
+      return
 
     job = self.preview_job
     if not job:
@@ -1120,298 +1153,124 @@ class ThucXuatApp(tk.Tk):
           p.name[:70],
           p.unit,
           p.ordered_qty,
-          raw,
+          raw.removeprefix("="),
           qty if qty is not None else "",
         ),
         tags=tuple(tags),
       )
 
-  def _edit_selected_row(self, _event=None) -> None:
-    """Sửa tay ô «Đọc từ ảnh» của dòng đang chọn, rồi lưu lại Excel."""
-    sel = self.tree.selection()
+  def _cancel_cell_editor(self, _event=None) -> None:
+    if self._cell_editor is not None:
+      entry = self._cell_editor
+      self._cell_editor = None
+      entry.destroy()
+
+  def _edit_selected_row(self, event) -> None:
+    """Đặt ô nhập lên dòng đang xem, chỉ ghi file khi nhấn Enter."""
+    if self._busy:
+      return
+    row_id = self.tree.identify_row(event.y)
+    column = "qty" if self.tree.identify_column(event.x) == "#7" else "raw"
+    bounds = self.tree.bbox(row_id, column) if row_id else ()
+    if not bounds:
+      return
     job = self.preview_job
-    if not sel or not job:
+    result = self.results_by_excel.get(job.excel_path) if job else None
+    if self._standalone_sheet is None and result is None:
+      self.status.config(text="Bấm «Tạo file Excel» trước để sửa từng dòng.")
       return
-    result = self.results_by_excel.get(job.excel_path)
-    if not result:
-      messagebox.showinfo(
-        "Chưa có kết quả",
-        "Bấm «Tạo file Excel» trước, sau đó mới sửa được từng dòng.",
-      )
-      return
-    values = self.tree.item(sel[0], "values")
-    if len(values) < 3:
-      return
-    try:
-      stt = int(values[0])
-    except (TypeError, ValueError, IndexError):
-      return
+    self._cancel_cell_editor()
+    row = self.tree.item(row_id, "values")
+    x, y, width, height = bounds
+    entry = ttk.Entry(self.tree, justify=tk.CENTER)
+    self._cell_editor = entry
+    entry.place(x=x, y=y, width=width, height=height)
+    entry.insert(0, row[5] or row[6])
+    entry.selection_range(0, tk.END)
+    entry.focus_set()
+    self.status.config(text="Nhập số hoặc phép tính, ví dụ 3*8, (10+2)/3. Enter lưu, Esc hủy.")
 
-    current = result.thuc_xuat_map.get(stt, "")
-    new_value = simpledialog.askstring(
-      "Sửa thực xuất",
-      f"STT {stt} — {values[2]}\nĐVT: {values[3]}\n\n"
-      "Nhập số (vd 10), X (bỏ dòng), ✓ (lấy số đặt),\n"
-      "hoặc nguyên văn trên phiếu:\n"
-      "• 3T*3 → 9, 5T x 24 → 120 (có dấu nhân thì mới nhân)\n"
-      "• 1T → 1, 30cm → 30 (không có dấu nhân thì giữ nguyên số)\n\n"
-      "Để trống = không xuất dòng này.",
-      initialvalue=current,
-      parent=self,
-    )
-    if new_value is None:
-      return
-
-    new_value = new_value.strip()
-    previous = result.thuc_xuat_map.get(stt)
-    if new_value:
-      result.thuc_xuat_map[stt] = new_value
-    else:
-      result.thuc_xuat_map.pop(stt, None)
-
-    try:
-      products = load_products(job.excel_path)
-      included, skipped = build_output(products, result.thuc_xuat_map)
-      save_output(included, result.output_path, include_name=result.include_name)
-      save_mapping(
-        result.output_path.with_suffix(".json"),
-        result.thuc_xuat_map,
-        meta={"source": str(job.excel_path), "edited": True},
-        names={row.code: row.name for row in (included + skipped) if row.name},
-      )
-    except Exception as exc:
-      # Hoàn tác để bảng xem trước không lệch với file trên đĩa.
-      if previous is None:
-        result.thuc_xuat_map.pop(stt, None)
-      else:
-        result.thuc_xuat_map[stt] = previous
+    def commit(_event) -> str:
+      try:
+        value = entry.get().strip()
+        self._save_preview_edit(int(row[0]), value)
+      except (ValueError, OSError) as exc:
+        self.status.config(text=f"Chưa lưu: {exc}")
+        self.bell()
+        return "break"
       self._fill_preview()
-      messagebox.showerror(
-        "Không lưu được",
-        f"{result.output_path.name} có thể đang mở trong Excel.\n\n"
-        f"Đóng file đó rồi sửa lại.\n\nChi tiết: {exc}",
+      match = next(
+        (item for item in self.tree.get_children() if self.tree.item(item, "values")[0] == row[0]),
+        None,
       )
+      if match is not None:
+        self.tree.selection_set(match)
+        self.tree.see(match)
+      self.tree.focus_set()
+      return "break"
+
+    entry.bind("<Return>", commit)
+    entry.bind("<KP_Enter>", commit)
+    entry.bind("<Escape>", self._cancel_cell_editor)
+    entry.bind("<FocusOut>", self._cancel_cell_editor)
+
+  def _save_preview_edit(self, stt: int, value: str) -> None:
+    value = value.removeprefix("=").strip()
+    skip = not value or value.lower() in ("x", "y")
+    sheet = self._standalone_sheet
+    if sheet is not None:
+      rows = list(sheet.rows)
+      if skip:
+        rows.pop(stt - 1)
+      else:
+        rows[stt - 1] = replace(rows[stt - 1], qty=calculate_manual_qty(value))
+      save_sheet(replace(sheet, rows=rows))
+      sheet.rows = rows
+      self.status.config(text=f"Đã lưu {sheet.path.name} ({len(rows)} dòng xuất)")
       return
 
+    job = self.preview_job
+    result = self.results_by_excel[job.excel_path]
+    products = load_products(job.excel_path)
+    product = next((p for p in products if p.stt == stt), None)
+    if product is None:
+      raise ValueError(f"Không tìm thấy STT {stt} trong Excel gốc.")
+    mapping = dict(result.thuc_xuat_map)
+    if skip:
+      if value:
+        mapping[stt] = "X"
+      else:
+        mapping.pop(stt, None)
+    else:
+      try:
+        calculate_manual_qty(value)
+      except ValueError:
+        if not re.fullmatch(
+          r"(?:[✓✔vV>/√]|\d+(?:[.,]\d+)?\s*[a-zà-ỹ]+(?:\s*[*x×]\s*\d+(?:[.,]\d+)?\s*[a-zà-ỹ]*)?)",
+          value, re.IGNORECASE,
+        ) or parse_qty(value, product.ordered_qty, product.unit) is None:
+          raise
+        mapping[stt] = value
+      else:
+        mapping[stt] = f"={value}"
+
+    included, skipped = build_output(products, mapping)
+    save_output(included, result.output_path, include_name=result.include_name)
+    result.thuc_xuat_map = mapping
+    self._manual_edits.setdefault(job.excel_path, {})[stt] = mapping.get(stt)
     result.included = included
     result.skipped = skipped
-    result.extracted_stt = len(result.thuc_xuat_map)
-
-    self._fill_preview()
-    self.status.config(
-      text=f"Đã sửa STT {stt} → lưu lại {result.output_path.name} "
-      f"({len(included)} dòng xuất)"
-    )
-
-
-class OutputEditor(tk.Toplevel):
-  """Cửa sổ sửa trực tiếp 1 file kết quả đã xuất (không cần đọc lại ảnh)."""
-
-  def __init__(self, app: "ThucXuatApp", sheet: OutputSheet) -> None:
-    super().__init__(app)
-    self.app = app
-    self.sheet = sheet
-    self.title(f"Sửa file đã xuất — {sheet.path.name}")
-    self.geometry("820x560")
-    self.minsize(680, 420)
-    self.transient(app)
-    self._build()
-    self.protocol("WM_DELETE_WINDOW", self._on_close)
-
-  def _build(self) -> None:
-    head = ttk.Frame(self, padding=(10, 8, 10, 4))
-    head.pack(fill=tk.X)
-    ttk.Label(head, text=str(self.sheet.path), foreground="#666").pack(side=tk.LEFT)
-    self.summary = ttk.Label(head, text="", foreground="#666")
-    self.summary.pack(side=tk.RIGHT)
-
-    body = ttk.Frame(self, padding=(10, 0, 10, 4))
-    body.pack(fill=tk.BOTH, expand=True)
-
-    cols = ("stt", "code", "name", "qty") if self.sheet.display_name else ("stt", "code", "qty")
-    self.tree = ttk.Treeview(body, columns=cols, show="headings")
-    for c, text, width, anchor in [
-      ("stt", "STT", 50, tk.CENTER),
-      ("code", "Mã SP", 150, tk.W),
-      ("name", "Tên hàng", 360, tk.W),
-      ("qty", "Thực xuất", 100, tk.CENTER),
-    ]:
-      if c not in cols:
-        continue
-      self.tree.heading(c, text=text)
-      self.tree.column(c, width=width, anchor=anchor)
-    self.tree.tag_configure("edited", background="#eef7ee")
-    self.tree.bind("<Double-1>", self._edit_selected)
-    self.tree.bind("<Delete>", lambda _e: self._remove_selected())
-    scroll = ttk.Scrollbar(body, orient=tk.VERTICAL, command=self.tree.yview)
-    self.tree.configure(yscrollcommand=scroll.set)
-    self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-    scroll.pack(side=tk.RIGHT, fill=tk.Y)
-
-    bar = ttk.Frame(self, padding=(10, 4, 10, 10))
-    bar.pack(fill=tk.X)
-    ttk.Button(bar, text="Sửa dòng (nháy đúp)", command=self._edit_selected).pack(side=tk.LEFT)
-    ttk.Button(bar, text="Xóa dòng", command=self._remove_selected).pack(side=tk.LEFT, padx=6)
-    self.save_btn = ttk.Button(
-      bar, text="Lưu (xuất lại file)", command=self._save
-    )
-    self.save_btn.pack(side=tk.LEFT, padx=(18, 6))
-    ttk.Button(bar, text="Lưu thành file mới...", command=self._save_as).pack(side=tk.LEFT)
-    ttk.Button(bar, text="Đóng", command=self._on_close).pack(side=tk.RIGHT)
-
-    self.status = ttk.Label(self, text="", padding=6, relief=tk.SUNKEN)
-    self.status.pack(fill=tk.X, side=tk.BOTTOM)
-    self.bind("<Control-s>", lambda _e: self._save())
-    self._fill()
-    self.status.config(text="Nháy đúp 1 dòng để sửa số Thực xuất • Ctrl+S để lưu")
-    if any(
-      r.output_path == self.sheet.path for r in self.app.results_by_excel.values()
-    ):
-      self.status.config(
-        text="Lưu ý: file này cũng là kết quả của phiếu đang mở trong app — "
-        "bấm «Xuất lại file kết quả» ở cửa sổ chính sẽ ghi đè thay đổi tại đây."
-      )
-
-  def _fill(self) -> None:
-    for item in self.tree.get_children():
-      self.tree.delete(item)
-    for i, row in enumerate(self.sheet.rows):
-      values = [i + 1, row.code]
-      if self.sheet.display_name:
-        values.append(row.name)
-      values.append("" if row.qty is None else row.qty)
-      self.tree.insert("", tk.END, iid=str(i), values=tuple(values))
-    self.summary.config(text=f"{len(self.sheet.rows)} dòng")
-
-  def _selected_index(self) -> int | None:
-    sel = self.tree.selection()
-    if not sel:
-      return None
+    result.extracted_stt = len(mapping)
     try:
-      return int(sel[0])
-    except (TypeError, ValueError):
-      return None
-
-  def _edit_selected(self, _event=None) -> None:
-    idx = self._selected_index()
-    if idx is None or idx >= len(self.sheet.rows):
-      return
-    row = self.sheet.rows[idx]
-    current = "" if row.qty is None else str(row.qty)
-    name_line = f"Tên: {row.name[:70]}\n" if row.name else ""
-    value = simpledialog.askstring(
-      "Sửa dòng",
-      f"Mã: {row.code}\n{name_line}\n"
-      "Nhập số thực xuất (vd 10, 5,5).\n"
-      "Để trống hoặc nhập x = xóa dòng khỏi file.",
-      initialvalue=current,
-      parent=self,
-    )
-    if value is None:
-      return
-    text = value.strip()
-    if not text or text.lower() in ("x", "y"):
-      self._delete_row(idx)
-      return
-    try:
-      number = float(text.replace(",", "."))
-    except ValueError:
-      messagebox.showwarning(
-        "Số không hợp lệ",
-        f"«{text}» không phải số.\nVí dụ hợp lệ: 10 ; 5,5 ; 120",
-        parent=self,
+      save_mapping(
+        result.output_path.with_suffix(".json"), mapping,
+        meta={"source": str(job.excel_path), "edited": True},
+        names={row.code: row.name for row in included + skipped if row.name},
       )
+    except OSError:
+      self.status.config(text=f"Đã lưu {result.output_path.name}, chưa ghi được JSON phụ.")
       return
-    if number <= 0:
-      messagebox.showwarning("Số không hợp lệ", "Thực xuất phải lớn hơn 0.", parent=self)
-      return
-    row.qty = int(number) if number.is_integer() else number
-    self.sheet.dirty = True
-    self._fill()
-    self.tree.selection_set(str(idx))
-    self.tree.see(str(idx))
-    self.status.config(text=f"Đã sửa dòng {idx + 1} → {row.qty} (chưa ghi vào file)")
-
-  def _remove_selected(self) -> None:
-    idx = self._selected_index()
-    if idx is not None:
-      self._delete_row(idx)
-
-  def _delete_row(self, idx: int) -> None:
-    if not (0 <= idx < len(self.sheet.rows)):
-      return
-    row = self.sheet.rows[idx]
-    if not messagebox.askyesno(
-      "Xóa dòng",
-      f"Xóa dòng «{row.code}» khỏi file?\n\n"
-      "(File chỉ mất dòng này; không ảnh hưởng ảnh hay Excel gốc.)",
-      parent=self,
-    ):
-      return
-    self.sheet.rows.pop(idx)
-    self.sheet.dirty = True
-    self._fill()
-    self.status.config(text=f"Đã xóa 1 dòng — còn {len(self.sheet.rows)} dòng (chưa lưu)")
-
-  def _save(self) -> bool:
-    return self._write(self.sheet.path)
-
-  def _save_as(self) -> bool:
-    path = filedialog.asksaveasfilename(
-      parent=self,
-      title="Lưu thành file mới",
-      defaultextension=".xlsx",
-      initialfile=self.sheet.path.stem + "_sua.xlsx",
-      initialdir=str(self.sheet.path.parent),
-      filetypes=[("Excel", "*.xlsx")],
-    )
-    if not path:
-      return False
-    return self._write(Path(path))
-
-  def _write(self, path: Path) -> bool:
-    try:
-      saved = save_sheet(self.sheet, path)
-    except PermissionError:
-      messagebox.showerror(
-        "Không ghi được file",
-        f"«{path.name}» đang mở trong Excel (hoặc bị khóa).\n\n"
-        "Đóng file đó rồi bấm Lưu lại.",
-        parent=self,
-      )
-      return False
-    except Exception as exc:  # noqa: BLE001 — báo lỗi rõ thay vì im lặng
-      messagebox.showerror("Không lưu được", str(exc), parent=self)
-      return False
-    self.sheet.path = saved
-    self.title(f"Sửa file đã xuất — {saved.name}")
-    try:
-      update_sidecar_names(
-        saved.with_suffix(".json"),
-        {r.code: r.name for r in self.sheet.rows if r.name},
-      )
-    except Exception:
-      pass
-    self.status.config(text=f"Đã lưu {len(self.sheet.rows)} dòng → {saved}")
-    try:
-      self.app._refresh_output_files(select=saved.name)
-      self.app.status.config(text=f"Đã lưu lại file đã xuất: {saved.name}")
-    except Exception:
-      pass
-    return True
-
-  def _on_close(self) -> None:
-    if self.sheet.dirty:
-      answer = messagebox.askyesnocancel(
-        "Chưa lưu",
-        "Có thay đổi chưa ghi vào file.\n\nLưu lại trước khi đóng?",
-        parent=self,
-      )
-      if answer is None:
-        return
-      if answer and not self._save():
-        return
-    self.destroy()
+    self.status.config(text=f"Đã lưu STT {stt} vào {result.output_path.name} ({len(included)} dòng xuất)")
 
 
 def run_gui() -> None:
