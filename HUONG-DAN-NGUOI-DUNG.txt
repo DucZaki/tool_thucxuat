@@ -44,6 +44,8 @@ CÁCH DÙNG
    — có thể thêm nhiều phiếu.
 2. Bấm «Thêm ảnh…» để chọn tất cả ảnh. App tự xác định ảnh thuộc phiếu nào.
    App chỉ đọc cột Thực xuất. Nội dung cột Ghi chú không dùng để tính số lượng.
+   Bấm «Xóa tất cả ảnh» nếu muốn bỏ nhanh toàn bộ ảnh khỏi danh sách
+   (chỉ bỏ trong app, không xóa file trên máy).
 3. Bấm «Đọc phiếu và xuất Excel»
    Nếu còn ảnh lỗi, bấm lại nút này để đọc tiếp; app giữ kết quả ảnh đã đọc
    và các dòng đã sửa tay trong phiên đang mở.

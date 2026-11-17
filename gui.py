@@ -208,6 +208,9 @@ class ThucXuatApp(tk.Tk):
     image_actions.pack(fill=tk.X, pady=(5, 0))
     ttk.Button(image_actions, text="Thêm ảnh…", command=self.add_images).pack(side=tk.LEFT)
     ttk.Button(image_actions, text="Bỏ ảnh", command=self.remove_selected_image).pack(side=tk.RIGHT)
+    ttk.Button(image_actions, text="Xóa tất cả ảnh", command=self.clear_all_images).pack(
+      side=tk.RIGHT, padx=(0, 6)
+    )
 
     self.clear_btn = ttk.Button(inputs, text="Reset app", command=self.reset_app)
     self.clear_btn.pack(fill=tk.X, pady=(6, 0))

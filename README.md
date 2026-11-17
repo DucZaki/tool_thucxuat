@@ -46,7 +46,7 @@ Kiểm tra số lượng trong bảng **Kết quả** trước khi nhập KiotVi
 4. **Kiểm tra bảng Kết quả**, sửa dòng sai bằng nháy đúp
 5. Bấm **Mở thư mục xuất** để mở thư mục `KetQua` trong Explorer
 
-Nếu còn ảnh lỗi, bấm **Đọc phiếu và xuất Excel** lần nữa để xử lý ảnh chưa đọc được. Trong cùng phiên cửa sổ, app dùng lại kết quả của ảnh đã đọc và giữ các dòng bạn đã sửa tay. **Reset app** bắt đầu phiên xử lý sạch.
+Nếu còn ảnh lỗi, bấm **Đọc phiếu và xuất Excel** lần nữa để xử lý ảnh chưa đọc được. Trong cùng phiên cửa sổ, app dùng lại kết quả của ảnh đã đọc và giữ các dòng bạn đã sửa tay. **Xóa tất cả ảnh** bỏ nhanh toàn bộ ảnh khỏi danh sách (chỉ bỏ trong app, không xóa file trên máy). **Reset app** bắt đầu phiên xử lý sạch.
 
 ### File xuất
 
