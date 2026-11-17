@@ -1288,4 +1288,15 @@ class ThucXuatApp(tk.Tk):
 
 
 def run_gui() -> None:
+  _ensure_shortcuts_in_background()
   ThucXuatApp().mainloop()
+
+
+def _ensure_shortcuts_in_background() -> None:
+  """Bản .exe đã cài: thiếu lối tắt Desktop/Start Menu thì tự tạo lại."""
+  try:
+    from thuc_xuat.shortcut import ensure_app_shortcuts
+
+    threading.Thread(target=ensure_app_shortcuts, daemon=True).start()
+  except Exception:  # noqa: BLE001 — lối tắt không được làm chết app
+    pass

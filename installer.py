@@ -18,6 +18,7 @@ import zipfile
 from pathlib import Path
 from tkinter import messagebox, ttk
 
+from thuc_xuat import shortcut as shortcut_lib
 from thuc_xuat.cancel import CancelledByUser
 from thuc_xuat.proc import install_no_window_defaults, popen, run
 from thuc_xuat.version import __version__
@@ -38,41 +39,12 @@ def install_dir() -> Path:
   return Path(base) / "Programs" / APP_NAME
 
 
-def _user_shell_folder(name: str) -> Path | None:
-  """Đường dẫn thật của Desktop/Programs (có thể bị OneDrive chuyển hướng)."""
-  try:
-    import winreg
-
-    key_path = r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
-      value, _ = winreg.QueryValueEx(key, name)
-    path = Path(os.path.expandvars(str(value)))
-    if path.is_dir():
-      return path
-  except (OSError, ValueError):
-    pass
-  return None
-
-
 def desktop_dir() -> Path:
-  override = os.environ.get("THUCXUAT_DESKTOP_DIR")
-  if override:
-    return Path(override)
-  known = _user_shell_folder("Desktop")
-  if known is not None:
-    return known
-  return Path(os.environ.get("USERPROFILE") or str(Path.home())) / "Desktop"
+  return shortcut_lib.desktop_dir()
 
 
 def start_menu_dir() -> Path:
-  override = os.environ.get("THUCXUAT_STARTMENU_DIR")
-  if override:
-    return Path(override)
-  known = _user_shell_folder("Programs")
-  if known is not None:
-    return known
-  appdata = os.environ.get("APPDATA") or str(Path.home())
-  return Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+  return shortcut_lib.start_menu_dir()
 
 
 def payload_zip() -> Path:
@@ -114,27 +86,8 @@ def extract_payload(
 
 
 def create_shortcut(link: Path, target: Path) -> None:
-  """Tạo .lnk bằng WScript.Shell (PowerShell)."""
-  link.parent.mkdir(parents=True, exist_ok=True)
-
-  def q(value: str | Path) -> str:
-    return "'" + str(value).replace("'", "''") + "'"
-
-  script = "\n".join(
-    [
-      "$ws = New-Object -ComObject WScript.Shell",
-      f"$sc = $ws.CreateShortcut({q(link)})",
-      f"$sc.TargetPath = {q(target)}",
-      f"$sc.WorkingDirectory = {q(target.parent)}",
-      f"$sc.IconLocation = {q(str(target) + ',0')}",
-      "$sc.Save()",
-    ]
-  )
-  run(
-    ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
-    check=True,
-    timeout=60,
-  )
+  """Tạo .lnk trực tiếp bằng Windows API (không cần PowerShell)."""
+  shortcut_lib.create_shortcut(link, target)
 
 
 def app_running() -> bool:
@@ -280,12 +233,17 @@ class SetupWindow(tk.Tk):
 
       self.check_cancel()
       self.post(self.set_status, "Đang tạo lối tắt...")
-      try:
-        create_shortcut(desktop_dir() / f"{SHORTCUT_NAME}.lnk", target / EXE_NAME)
-        create_shortcut(start_menu_dir() / f"{SHORTCUT_NAME}.lnk", target / EXE_NAME)
-        self.post(self.log, "Đã tạo lối tắt Desktop và Start Menu")
-      except Exception as exc:  # lối tắt lỗi không chặn cài đặt
-        self.post(self.log, f"Không tạo được lối tắt: {exc}")
+      desk_link = desktop_dir() / f"{SHORTCUT_NAME}.lnk"
+      menu_link = start_menu_dir() / f"{SHORTCUT_NAME}.lnk"
+      problems: list[str] = []
+      for label, link in (("Desktop", desk_link), ("Start Menu", menu_link)):
+        try:
+          create_shortcut(link, target / EXE_NAME)
+          self.post(self.log, f"Đã tạo lối tắt {label}: {link}")
+        except Exception as exc:  # lối tắt lỗi không chặn cài đặt
+          problems.append(f"{label}: {exc}")
+      if problems:
+        self.post(self.log, "Không tạo được lối tắt — " + "; ".join(problems))
 
       self.check_cancel()
       self.post(self.on_success)
@@ -305,9 +263,12 @@ class SetupWindow(tk.Tk):
     self._running = False
     self.progress.stop()
     self.progress.config(mode="determinate", value=100)
-    self.set_status("Cài đặt hoàn tất — mở app để nhập API key NVIDIA NIM.")
+    if (desktop_dir() / f"{SHORTCUT_NAME}.lnk").is_file():
+      self.set_status("Cài đặt hoàn tất — biểu tượng «Thực Xuất» đã có ngoài Desktop.")
+    else:
+      self.set_status("Cài đặt hoàn tất — mở app để nhập API key NVIDIA NIM.")
     self.set_detail(f"Đã cài vào {install_dir()}")
-    self.log("Xong. Bấm «Mở ứng dụng» để chạy.")
+    self.log("Xong. Bấm «Mở ứng dụng» để chạy — lối tắt «Thực Xuất» ở Desktop/Start Menu.")
     self.primary_btn.config(text="Mở ứng dụng", state="normal")
     self.cancel_btn.config(text="Đóng", state="normal")
 
