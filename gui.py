@@ -65,8 +65,8 @@ class ThucXuatApp(tk.Tk):
   def __init__(self) -> None:
     super().__init__()
     self.title(f"Thực Xuất v{__version__} — Ảnh phiếu + Excel → Excel nhập kho")
-    self.geometry("1260x810")
-    self.minsize(950, 640)
+    self._fit_window()
+    self.resizable(True, True)
 
     self.jobs: list[OrderJob] = []
     self.all_images: list[Path] = []
@@ -87,6 +87,16 @@ class ThucXuatApp(tk.Tk):
     self._build_ui()
     self.protocol("WM_DELETE_WINDOW", self._on_close)
     self.after(1500, self._check_update_silent)
+
+  def _fit_window(self) -> None:
+    """Mở vừa màn hình để luôn thấy viền dưới (kéo được cả ngang lẫn dọc)."""
+    sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+    width = min(1260, max(760, sw - 40))
+    height = min(810, max(480, sh - 90))
+    x = max(0, (sw - width) // 2)
+    y = max(0, (sh - height) // 2 - 20)
+    self.geometry(f"{width}x{height}+{x}+{y}")
+    self.minsize(min(950, width), min(640, height))
 
   def report_callback_exception(self, exc, val, tb) -> None:  # noqa: ANN001
     """Lỗi trong 1 nút bấm không được làm app chết im lặng (bản .exe không có console)."""
@@ -176,6 +186,7 @@ class ThucXuatApp(tk.Tk):
     self.status.pack(fill=tk.X)
     self.progress = ttk.Progressbar(footer, mode="indeterminate")
     self.progress.pack(fill=tk.X, pady=(5, 0))
+    ttk.Sizegrip(footer).pack(side=tk.RIGHT)
 
     workspace = ttk.Frame(shell, style="Canvas.TFrame")
     workspace.pack(fill=tk.BOTH, expand=True)
