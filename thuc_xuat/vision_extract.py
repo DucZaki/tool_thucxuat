@@ -69,6 +69,8 @@ Quy tắc:
 - Cột này không dùng dấu tick. Nét giống ✓, ✔, V, Y hay gạch chéo đều là dấu bỏ dòng: ghi "X".
   Ô trống thực sự → bỏ STT đó.
 - Giữ đơn vị viết tay: "14 con", "5,5", "1T", "10H", "5T x 24".
+- Nếu thực xuất ghi "120 gói", trả đủ "120 gói". Chỉ chép đơn vị nằm trong chính ô viết tay.
+- Nhìn kỹ dấu x sau chữ T, vì nét x viết tay dễ giống dấu +. Ví dụ "5T x 8" chép đủ dấu x.
 - Chữ T viết tay giống số 7 → ghi T: "1T", "4T", "10T", không ghi 17/47/107.
 - Không tự nhân/quy đổi.
 - STT nằm trong khoảng 1–{max_stt}.{stt_hint}

@@ -101,8 +101,9 @@ CÁCH TÍNH SỐ LƯỢNG
 - Ghi 10T, 4T, 1T        -> 10, 4, 1 (bỏ chữ, giữ nguyên số)
 - Ghi 30cm, 10 gói, 30kg -> 30, 10, 30 (bỏ đơn vị, giữ nguyên số)
 - AI đọc nét giống ✓     -> coi là X, bỏ dòng
-KHÔNG nhân theo ĐVT: ĐVT «thùng 20 hộp» + ghi 10T vẫn là 10 thùng -> xuất 10.
-Chỉ nhân khi ô viết tay có dấu nhân (vd 5T x 24 -> 120).
+- Ghi 120 gói với ĐVT «thùng(T)/60 gói» -> 2 thùng.
+- Ghi 10T với ĐVT «thùng 20 hộp» -> 10 thùng.
+- Khi đọc ảnh, 5T+8 được hiểu là 5T x 8 -> 40. Phép cộng nhập tay vẫn tính bình thường.
 Cột ĐVT trong bảng Kết quả giúp bạn đối chiếu trước khi nhập KiotViet.
 
 Lưu ý:

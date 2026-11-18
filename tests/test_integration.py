@@ -72,7 +72,7 @@ class ParseQtyRulesTests(unittest.TestCase):
     self.assertEqual(parse_qty("1T", 1, "thùng 6 hộp"), 1)
     self.assertEqual(parse_qty("12", 12, "thùng 20 hộp"), 12)
     self.assertEqual(parse_qty("30cm", 3, "thùng 10 con"), 30)
-    self.assertEqual(parse_qty("24 gói", 7, "thùng 40 gói"), 24)
+    self.assertEqual(parse_qty("24 gói", 7, "thùng 40 gói"), 0.6)
 
   def test_tick_marks_use_ordered_qty(self):
     for mark in ("✓", "v", "V", ">", "/", "√"):

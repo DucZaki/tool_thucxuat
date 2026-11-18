@@ -96,7 +96,8 @@ Thư mục xuất đổi được trong `config.json` (`output_dir`), mặc đ�
 | `Y` / `y` (nét gạch chéo bị đọc nhầm) | Bỏ dòng — phiếu không có chữ Y |
 | `3T*3`, `5T x 24`, `3TX6` | Có dấu nhân thì nhân: 9, 120, 18 |
 | `10T`, `4T`, `1T`, `12` | Bỏ chữ, giữ nguyên số: 10, 4, 1, 12 |
-| `30cm`, `10 gói`, `30kg`, `18 quả` | Bỏ đơn vị, giữ nguyên số: 30, 10, 30, 18 |
+| `120 gói` và ĐVT `thùng(T)/60 gói` | 2 thùng |
+| `5T+8` đọc từ ảnh | Ưu tiên cách đọc `5T x 8`, cho kết quả 40 |
 | `5b x 30kg` | 5 (30kg là trọng lượng nên không nhân) |
 | OCR đọc nét giống `✓`, `✔`, `v`, `V`, `>`, `/`, `√` | Coi như `X`, bỏ dòng |
 | Trống / không có STT trên ảnh | Không xuất dòng |
@@ -104,9 +105,9 @@ Thư mục xuất đổi được trong `config.json` (`output_dir`), mặc đ�
 
 STT trên phiếu = thứ tự dòng Excel (dòng 2 = STT 1).
 
-**Không quy đổi theo ĐVT.** Cột ĐVT đã nói rõ đơn vị (vd `thùng 20 hộp`),
-nên phiếu ghi `10T` nghĩa là 10 thùng → xuất **10**, không phải 200.
-Chỉ nhân khi chính ô viết tay có dấu nhân (`5T x 24` → 120 hộp lẻ).
+Chỉ chia theo quy cách khi đơn vị đếm viết tay khớp đơn vị nhỏ trong Excel.
+Ví dụ `120 gói` chia cho 60 gói/thùng. Số trần và số đã theo ĐVT đích giữ nguyên.
+Phép nhân ghi trên phiếu vẫn tính như trước. Phép cộng nhập khi sửa ô vẫn dùng dấu `+`.
 Bảng Kết quả có cột **ĐVT** cạnh cột «Đọc từ ảnh» để bạn đối chiếu từng dòng.
 
 ## CLI

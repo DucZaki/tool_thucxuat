@@ -50,8 +50,7 @@ class ParseQtyTests(unittest.TestCase):
       with self.subTest(raw=raw):
         self.assertEqual(parse_qty(raw), expected)
 
-  def test_no_conversion_from_detail_unit(self):
-    # Không có dấu nhân -> giữ nguyên số, bỏ chữ (không nhân hệ số ĐVT)
+  def test_keep_quantities_already_in_excel_unit(self):
     self.assertEqual(parse_qty("2T", 7, "thùng 40 gói"), 2)
     self.assertEqual(parse_qty("1T", 1, "thùng 6 hộp"), 1)
     self.assertEqual(parse_qty("12", 12, "thùng 20 hộp"), 12)
@@ -59,9 +58,31 @@ class ParseQtyTests(unittest.TestCase):
     self.assertEqual(parse_qty("10T", 10, "thùng 20 hộp"), 10)
     self.assertEqual(parse_qty("30cm", 3, "thùng 10 con"), 30)
     self.assertEqual(parse_qty("80G", 7, "thùng 40 gói"), 80)
-    self.assertEqual(parse_qty("24 gói", 7, "thùng 40 gói"), 24)
-    # Có dấu nhân thì mới nhân
     self.assertEqual(parse_qty("2T*3", 7, "thùng 40 gói"), 6)
+
+  def test_convert_only_matching_explicit_package_units(self):
+    cases = [
+      ("120 gói", "thùng(T)/60 gói", 2),
+      ("120GOI", "Thùng (60 gói)", 2),
+      ("90 gói", "thùng 60 gói", 1.5),
+      ("24 gói", "thùng 40 gói", 0.6),
+      ("120 gói", "thùng 60 hộp", 120),
+      ("120 gói", "thùng (40–60 gói)", 120),
+      ("120 gói", "thùng 10 lốc x 6 gói", 120),
+      ("120 gói", "thùng (60)", 120),
+      ("120 gói", "thùng 0 gói", 120),
+      ("12 kg", "thùng 6 kg", 12),
+    ]
+    for raw, unit, expected in cases:
+      with self.subTest(raw=raw, unit=unit):
+        self.assertEqual(parse_qty(raw, 7, unit), expected)
+
+  def test_plus_after_thung_is_ocr_multiplication(self):
+    self.assertEqual(parse_qty("5T+8"), 40)
+    self.assertEqual(parse_qty("5 thùng + 8"), 40)
+    self.assertEqual(parse_qty("1,5T + 8"), 12)
+    self.assertEqual(parse_qty("=5+8"), 13)
+    self.assertEqual(expected_qty(5, "5T+8"), 40)
 
   def test_pack_factor_values(self):
     self.assertEqual(pack_factor("thùng 40 gói"), 40)

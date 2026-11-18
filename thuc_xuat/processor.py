@@ -6,6 +6,7 @@ import ast
 import math
 import operator
 import re
+import unicodedata
 from decimal import Decimal, DecimalException
 from dataclasses import dataclass
 from pathlib import Path
@@ -70,17 +71,50 @@ def calculate_manual_qty(text: str) -> int | float:
 # Phiếu không có chữ Y. Nét gạch chéo (X) hay bị đọc thành Y → vẫn là "bỏ dòng".
 _X_OR_Y_RE = re.compile(r"^(?:\d+(?:[.,]\d+)?)?[XY]$")
 
-_COUNT_UNITS = (
-  "gói", "goi", "hộp", "hop", "khay", "con", "chai", "lốc", "loc", "lon",
-  "cái", "cai", "quả", "qua", "túi", "tui", "bịch", "bich", "hũ", "hu",
-  "cuộn", "cuon", "viên", "vien", "miếng", "mieng",
-)
+_COUNT_UNITS = frozenset({
+  "goi", "hop", "khay", "con", "chai", "loc", "lon", "cai", "qua", "tui",
+  "bich", "hu", "cuon", "vien", "mieng", "vi", "coc", "ly", "cay", "chiec",
+  "bo", "doi", "bao", "binh",
+})
+_PACKAGE_UNITS = frozenset({
+  "thung", "t", "hop", "khay", "loc", "tui", "bich", "bao", "vi", "goi", "bo",
+})
+_COUNT_WITH_UNIT = re.compile(r"(\d+(?:[.,]\d+)?)\s*([a-z]+)")
+_OCR_PACK_PLUS = re.compile(r"\d+(?:[.,]\d+)?\s*(?:t|thung)\s*\+\s*(\d+(?:[.,]\d+)?)")
 
-# "2kg", "600-700g", "10 lít" — số này là trọng lượng, không phải số lượng quy đổi.
-_WEIGHT_RE = re.compile(
-  r"\d+(?:[.,]\d+)?\s*(?:kg|gam|gram|ml|lít|lit)(?![a-zà-ỹ])"
-  r"|\b\d+(?:[.,]\d+)?\s*g(?![a-zà-ỹ])"
-)
+def _plain_unit(text: Any) -> str:
+  normalized = unicodedata.normalize("NFD", str(text or "").strip().lower())
+  return "".join(char for char in normalized if not unicodedata.combining(char))
+
+
+def _package_counts(unit: Any) -> set[tuple[float, str]]:
+  counts = set()
+  for amount, label in _COUNT_WITH_UNIT.findall(_plain_unit(unit)):
+    if label in _COUNT_UNITS:
+      factor = float(amount.replace(",", "."))
+      if math.isfinite(factor) and factor > 0:
+        counts.add((factor, label))
+  return counts
+
+
+def _quantity_in_excel_unit(raw: str, unit: Any) -> int | float | None:
+  """Convert a handwritten count only when the Excel unit gives its exact pack size."""
+  written = _COUNT_WITH_UNIT.fullmatch(_plain_unit(raw))
+  excel_unit = _plain_unit(unit)
+  target = re.match(r"^[a-z]+", excel_unit)
+  if not written or not target or target[0] not in _PACKAGE_UNITS:
+    return None
+  if re.search(r"\d\s*[-–—~]\s*\d", excel_unit):
+    return None  # A range is not a fixed packing quantity.
+  counts = _package_counts(unit)
+  if len(counts) != 1:
+    return None
+  factor, inner_unit = next(iter(counts))
+  if written[2] != inner_unit or inner_unit == target[0]:
+    return None
+  amount = float(written[1].replace(",", "."))
+  result = amount / factor
+  return _to_number(str(result)) if math.isfinite(result) else None
 
 
 # Ký tự vô hình hay lọt vào ô mã hàng (copy từ web/chat) → coi như rỗng.
@@ -136,17 +170,15 @@ def pack_factor(unit: Any) -> int | float | None:
   """
   if not unit:
     return None
-  s = _WEIGHT_RE.sub(" ", str(unit).lower())
-  factor: int | float | None = None
-  for m in re.finditer(r"(\d+(?:[.,]\d+)?)\s*([a-zà-ỹ]+)", s):
-    if m.group(2).startswith(_COUNT_UNITS):
-      factor = _to_number(m.group(1).replace(",", "."))
-  if factor is None:
-    # 'thùng (40)' — số trần trong ngoặc
-    m = re.search(r"\(\s*(\d+(?:[.,]\d+)?)\s*\)", s)
+  counts = _package_counts(unit)
+  if len(counts) == 1:
+    return next(iter(counts))[0]
+  if not counts:
+    # 'thùng (40)' — số trần trong ngoặc, không có tên đơn vị nhỏ.
+    m = re.search(r"\(\s*(\d+(?:[.,]\d+)?)\s*\)", str(unit))
     if m:
-      factor = _to_number(m.group(1).replace(",", "."))
-  return factor
+      return _to_number(m.group(1).replace(",", "."))
+  return None
 
 
 def _looks_like_t_read_as_7(compact: str, ordered_qty: Any) -> bool:
@@ -188,6 +220,9 @@ def _explicit_factors(text: str) -> list[float]:
 
   '5b x 30kg' -> [] vì 30kg là trọng lượng, không phải số lượng gấp.
   """
+  # A handwritten x often looks like + after the abbreviation for thùng.
+  if match := _OCR_PACK_PLUS.fullmatch(_plain_unit(text)):
+    return [float(match[1].replace(",", "."))]
   factors: list[float] = []
   for m in re.finditer(r"[*x×]\s*(\d+(?:[.,]\d+)?)(.*)", text, re.IGNORECASE):
     tail = m.group(2).lower()
@@ -213,8 +248,9 @@ def parse_qty(
   - Y (nét gạch chéo bị đọc nhầm) -> None (bỏ dòng)
   - Chỉ tick (✓ v V > / √) -> lấy số lượng đặt
   - Có dấu nhân -> nhân: '3T*3' -> 9, '5T x 24' -> 120
-  - Không có dấu nhân -> giữ nguyên số, KHÔNG quy đổi theo ĐVT:
-    '10 gói' -> 10, '30kg' -> 30, '30cm' -> 30, '1T' -> 1, '12' -> 12
+  - '5T+8' đọc từ ảnh -> ưu tiên 5T x 8. Biểu thức nhập tay có tiền tố =.
+  - '120 gói' với ĐVT 'thùng(T)/60 gói' -> 2 thùng. Chỉ chia khi khớp đơn vị nhỏ.
+  - Số trần hoặc số đã ghi theo ĐVT đích giữ nguyên.
   - Số lẻ giữ nguyên: '5,5' -> 5.5
   """
   if raw is None:
@@ -236,6 +272,9 @@ def parse_qty(
   if s in TICK_MARKS:
     value = _as_number(ordered_qty)
     return value if isinstance(value, (int, float)) else None
+  converted = _quantity_in_excel_unit(s, unit)
+  if converted is not None:
+    return converted
 
   base: int | float | None = None
   factors: list[float] = []
