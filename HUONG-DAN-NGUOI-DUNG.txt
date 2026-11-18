@@ -38,7 +38,7 @@ Chọn «Tự động · Super VL → Nano Omni» hoặc chọn một model tron
 Ô nhập chỉ giữ key đến khi tắt app. App nhớ model đã chọn.
 Khi bấm «Đọc phiếu và xuất Excel», ảnh đã tiền xử lý được gửi tới NVIDIA NIM.
 
-CÁCH DÙNG
+THỰC XUẤT
 ---------
 1. Thêm Excel gốc (DanhSachChiTietDatHangNhap_*.xlsx)
    — có thể thêm nhiều phiếu.
@@ -67,9 +67,16 @@ Có thể sửa file cũ mà không cần ảnh hay đọc lại AI.
 
 FILE XUẤT RA
 ------------
-File kết quả luôn có 2 cột: Mã sản phẩm + Thực xuất (dùng nhập KiotViet).
-Tên hàng hiển thị trong bảng «Kết quả»
-(lấy từ Excel gốc / file JSON phụ cạnh file kết quả) — không còn cột Tên trong Excel xuất ra.
+File kết quả mặc định có 2 cột «Mã hàng» và «Số lượng chuyển» trong bảng Excel.
+Số lượng là dữ liệu số. Excel hiển thị số nguyên và số thập phân theo thiết lập vùng.
+
+KIỂM KÊ
+-------
+1. Mở tab «Kiểm kê». App nạp sẵn danh mục và mẫu nhập hàng.
+   Dùng «Chọn Excel…» nếu cần thay danh mục hoặc mẫu.
+2. Thêm ảnh rồi bấm «Đọc ảnh và đối chiếu».
+3. Nếu cần sửa, chọn dòng, chọn mã và đơn vị trong danh sách, nhập số lượng rồi xác nhận.
+4. Bấm «Xuất file nhập hàng». App dùng Giá vốn theo mặc định.
 
 XUẤT LẠI FILE KẾT QUẢ
 ----------------------

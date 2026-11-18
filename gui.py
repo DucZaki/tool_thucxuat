@@ -188,8 +188,13 @@ class ThucXuatApp(tk.Tk):
     self.progress.pack(fill=tk.X, pady=(5, 0))
     ttk.Sizegrip(footer).pack(side=tk.RIGHT)
 
-    workspace = ttk.Frame(shell, style="Canvas.TFrame")
-    workspace.pack(fill=tk.BOTH, expand=True)
+    self.pages = ttk.Notebook(shell)
+    self.pages.pack(fill=tk.BOTH, expand=True)
+    workspace = ttk.Frame(self.pages, style="Canvas.TFrame")
+    self.pages.add(workspace, text="Thực xuất")
+    from thuc_xuat.inventory_ui import InventoryPage
+    self.inventory_page = InventoryPage(self.pages, self)
+    self.pages.add(self.inventory_page, text="Kiểm kê")
     workspace.rowconfigure(0, weight=1)
     workspace.columnconfigure(1, weight=1)
     inputs = ttk.Frame(workspace, style="Card.TFrame", padding=14)

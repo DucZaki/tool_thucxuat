@@ -149,17 +149,19 @@ class OutputFileTests(unittest.TestCase):
       save_output(
         [
           OutputRow(1, "SP1", "n", "10", 10),
-          OutputRow(2, "SP2", "n", "5T", 5),
+          OutputRow(2, "SP2", "n", "5.5", 5.5),
         ],
         out,
       )
       wb = load_workbook(out, read_only=True)
       ws = wb.active
-      self.assertEqual([ws.cell(1, 1).value, ws.cell(1, 2).value], ["Mã sản phẩm", "Thực xuất"])
+      self.assertEqual([ws.cell(1, 1).value, ws.cell(1, 2).value], ["Mã hàng", "Số lượng chuyển"])
       self.assertEqual(ws.max_column, 2)
       self.assertEqual(ws.cell(2, 1).value, "SP1")
       self.assertEqual(ws.cell(2, 2).value, 10)
-      self.assertEqual(ws.cell(3, 2).value, 5)
+      self.assertEqual(ws.cell(3, 2).value, 5.5)
+      for row in (2, 3):
+        self.assertEqual((ws.cell(row, 2).data_type, ws.cell(row, 2).number_format), ("n", "General"))
       wb.close()
 
   def test_default_output_path_pdn(self):
@@ -179,7 +181,7 @@ class OutputFileTests(unittest.TestCase):
       ws = wb.active
       self.assertEqual(
         [ws.cell(1, i).value for i in (1, 2, 3)],
-        ["Mã sản phẩm", "Tên sản phẩm", "Thực xuất"],
+        ["Mã hàng", "Tên sản phẩm", "Số lượng chuyển"],
       )
       self.assertEqual(ws.max_column, 3)
       self.assertEqual(

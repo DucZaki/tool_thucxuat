@@ -21,6 +21,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
   "nim_model": "nim-auto",
   # 0 = tự chia theo chiều cao ảnh; 1..4 = số dải cố định
   "image_bands": 0,
+  "inventory_catalog": "",
+  "inventory_template": "",
 }
 
 OUTPUT_DIR_NAME = "KetQua"

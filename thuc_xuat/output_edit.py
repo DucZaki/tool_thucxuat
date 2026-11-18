@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Đọc và sửa lại file Excel đã xuất (Mã sản phẩm | [Tên sản phẩm] | Thực xuất).
+"""Đọc và sửa file chuyển hàng, hỗ trợ cả tiêu đề của file phiên bản cũ.
 
 Dùng cho tính năng «chọn 1 file đã xuất → sửa trực tiếp → lưu/xuất lại»:
 file kết quả chỉ có 2 hoặc 3 cột nên đọc lại rất nhẹ, không cần ảnh hay Excel gốc.
@@ -12,11 +12,11 @@ from decimal import Decimal
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
-from thuc_xuat.processor import Product, parse_qty
+from thuc_xuat.processor import Product, parse_qty, format_output_table
 
-CODE_HEADER = "Mã sản phẩm"
+CODE_HEADER = "Mã hàng"
 NAME_HEADER = "Tên sản phẩm"
-QTY_HEADER = "Thực xuất"
+QTY_HEADER = "Số lượng chuyển"
 
 
 class OutputFormatError(ValueError):
@@ -86,8 +86,13 @@ def _qty(value: object) -> int | float | None:
 
 
 def _header_index(header: list[str], name: str) -> int | None:
+  legacy_name = {
+    CODE_HEADER: "Mã sản phẩm",
+    NAME_HEADER: "Tên hàng",
+    QTY_HEADER: "Thực xuất",
+  }.get(name, name)
   for i, cell in enumerate(header):
-    if cell == name:
+    if cell in (name, legacy_name):
       return i
   return None
 
@@ -184,6 +189,7 @@ def save_sheet(sheet: OutputSheet, path: str | Path | None = None) -> Path:
       values.append(row.name)
     values.append(row.qty if row.qty is not None else "")
     ws.append(values)
+  format_output_table(ws)
   wb.save(str(target))
   wb.close()
   sheet.path = target

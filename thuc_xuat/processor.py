@@ -353,14 +353,16 @@ def save_output(
   ws = wb.active
   ws.title = "ThucXuat"
   if include_name:
-    ws.append(["Mã sản phẩm", "Tên sản phẩm", "Thực xuất"])
+    ws.append(["Mã hàng", "Tên sản phẩm", "Số lượng chuyển"])
     for row in rows:
       ws.append([row.code, row.name, row.qty])
   else:
-    ws.append(["Mã sản phẩm", "Thực xuất"])
+    ws.append(["Mã hàng", "Số lượng chuyển"])
     for row in rows:
       ws.append([row.code, row.qty])
+  format_output_table(ws)
   wb.save(str(output_path))
+  wb.close()
 
 
 def output_file_name(source_path: str | Path, include_name: bool = False) -> str:
@@ -388,3 +390,23 @@ def default_output_path(
   folder = Path(out_dir) if out_dir is not None else Path(source_path).parent
   return folder / output_file_name(source_path, include_name)
 
+
+
+def format_output_table(ws) -> None:
+  """Create the native Excel table used by transfer imports."""
+  from openpyxl.worksheet.table import Table, TableStyleInfo
+  from openpyxl.utils import get_column_letter
+
+  last = get_column_letter(ws.max_column)
+  table = Table(displayName="ThucXuatTable", ref=f"A1:{last}{ws.max_row}")
+  table.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)
+  ws.add_table(table)
+  ws.freeze_panes = "A2"
+  for row in ws.iter_rows(min_row=2, max_col=ws.max_column - 1):
+    for cell in row:
+      cell.number_format = "@"
+      cell.data_type = "s"
+  ws.column_dimensions["A"].width = 24
+  ws.column_dimensions[last].width = 22
+  if ws.max_column == 3:
+    ws.column_dimensions["B"].width = 60

@@ -18,7 +18,7 @@ a = Analysis(
   ["app.py"],
   pathex=[],
   binaries=[],
-  datas=[],
+  datas=[("data/*.xlsx", "data")],
   hiddenimports=hiddenimports,
   hookspath=[],
   hooksconfig={},

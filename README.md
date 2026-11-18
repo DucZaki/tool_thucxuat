@@ -2,6 +2,25 @@
 
 **Ảnh phiếu + Excel KiotViet → File Excel nhập kho** — đọc ảnh qua NVIDIA NIM.
 
+App có hai trang **Thực xuất** và **Kiểm kê**, dùng chung API key và model NVIDIA NIM.
+
+Trang **Kiểm kê** tự nạp danh mục và mẫu nhập hàng trong thư mục `data`.
+Hai nút **Chọn Excel…** cho phép thay danh mục hoặc mẫu và nhớ lựa chọn cho lần mở sau.
+Đường dẫn đã chọn bị mất thì app tự quay về dữ liệu được đóng gói.
+App đọc tên sản phẩm viết tay, ĐVT và số thực tế, tìm ứng viên từ toàn bộ danh mục,
+rồi dùng NIM đối chiếu để chọn mã hàng. File nhập tham chiếu trong `data`
+giúp ưu tiên mã thường đã sử dụng giữa nhiều biến thể cùng tên.
+Có thể xuất ngay sau khi đọc, ghi chú độ tin cậy không yêu cầu xác nhận từng dòng.
+Nháy đúp để sửa nếu muốn. Biểu thức như `1+8` được tính tự động.
+Với quy cách khay 3 con, `1 khay 3 con` là 1 khay, còn `1 khay + 3 con` là 2 khay.
+Bấm đọc lại để tiếp tục ảnh lỗi, dữ liệu đã đọc được dùng lại.
+Khi xuất, app giữ cấu trúc và định dạng mẫu, xóa dòng ví dụ, dùng **Giá vốn**
+trong danh mục cho **Đơn giá**, để trống **Giảm giá** và **Giảm giá (%)**.
+Có thể chọn Giá bán trên giao diện.
+
+File **Thực xuất** có hai cột **Mã hàng** và **Số lượng chuyển**, được tạo thành
+Excel Table. App vẫn mở và sửa được file dùng tên cột cũ.
+
 ## Cài đặt (máy dev)
 
 **Cần Python 3.12 (64-bit).**

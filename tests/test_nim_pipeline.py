@@ -70,7 +70,7 @@ class NimPipelineTests(unittest.TestCase):
     wb = load_workbook(self.output, read_only=True)
     try:
       self.assertEqual(list(wb.active.values), [
-        ("Mã sản phẩm", "Thực xuất"), ("SKU01", 120),
+        ("Mã hàng", "Số lượng chuyển"), ("SKU01", 120),
       ])
     finally:
       wb.close()
@@ -168,7 +168,7 @@ class NimPipelineTests(unittest.TestCase):
     for result, expected in zip(batch.results, [("SKU01", 120), ("OTHER01", 9)]):
       wb = load_workbook(result.output_path, read_only=True)
       try:
-        self.assertEqual(list(wb.active.values), [("Mã sản phẩm", "Thực xuất"), expected])
+        self.assertEqual(list(wb.active.values), [("Mã hàng", "Số lượng chuyển"), expected])
       finally:
         wb.close()
 
@@ -260,6 +260,6 @@ class NimPipelineTests(unittest.TestCase):
     self.assertEqual(batch.results[0].thuc_xuat_map, {1: "=3*8", 2: "8"})
     wb = load_workbook(self.output, read_only=True)
     try:
-      self.assertEqual(list(wb.active.values), [("Mã sản phẩm", "Thực xuất"), ("SKU01", 24), ("SKU02", 8)])
+      self.assertEqual(list(wb.active.values), [("Mã hàng", "Số lượng chuyển"), ("SKU01", 24), ("SKU02", 8)])
     finally:
       wb.close()
