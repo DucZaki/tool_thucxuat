@@ -10,7 +10,7 @@ from thuc_xuat.config import load_config, output_dir
 from thuc_xuat.io_json import load_mapping, save_mapping
 from thuc_xuat.nim_client import DEFAULT_MODEL, MODELS, NimVision
 from thuc_xuat.pipeline import process_batch_like_chat
-from thuc_xuat.processor import build_output, default_output_path, load_products, save_output
+from thuc_xuat.processor import build_output, carton_review_message, default_output_path, load_products, save_output
 from thuc_xuat.updater import check_for_update
 from thuc_xuat.version import __version__
 
@@ -32,6 +32,8 @@ def cmd_process(args: argparse.Namespace) -> int:
     print(f"  STT doc tu anh: {r.extracted_stt}")
     print(f"  Dong xuat: {len(r.included)}")
     print(f"  Bo: {len(r.skipped)}")
+    if detail := carton_review_message(r.skipped):
+      print(detail, file=sys.stderr)
     save_mapping(
       r.output_path.with_suffix(".json"),
       r.thuc_xuat_map,
@@ -59,6 +61,8 @@ def cmd_build(args: argparse.Namespace) -> int:
   out.parent.mkdir(parents=True, exist_ok=True)
   save_output(included, out, include_name=args.with_name)
   print(f"OK: {len(included)} dong -> {out}")
+  if detail := carton_review_message(skipped):
+    print(detail, file=sys.stderr)
   return 0
 
 

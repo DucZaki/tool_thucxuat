@@ -3,10 +3,14 @@
 import unittest
 from pathlib import Path
 
-from thuc_xuat.vision_extract import _natural_key, _sort_images
+from thuc_xuat.vision_extract import _is_product_name, _natural_key, _sort_images
 
 
 class ImageSortTests(unittest.TestCase):
+  def test_handwritten_pack_count_can_also_appear_in_product_name(self):
+    self.assertFalse(_is_product_name("60 cái", "Bánh (thùng 60 cái)"))
+    self.assertTrue(_is_product_name("Bánh tráng", "Bánh tráng (thùng 60 cái)"))
+
   def test_natural_sort_pages(self):
     paths = [Path("page10.jpg"), Path("page2.jpg"), Path("page1.jpg")]
     self.assertEqual(

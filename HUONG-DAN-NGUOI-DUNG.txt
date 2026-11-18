@@ -102,6 +102,9 @@ CÁCH TÍNH SỐ LƯỢNG
 - Ghi 30cm, 10 gói, 30kg -> 30, 10, 30 (bỏ đơn vị, giữ nguyên số)
 - AI đọc nét giống ✓     -> coi là X, bỏ dòng
 - Ghi 120 gói với ĐVT «thùng(T)/60 gói» -> 2 thùng.
+- App tìm quy cách trong cả ĐVT và tên hàng, ví dụ «thùng/60 cái» hoặc «60 cái/thùng».
+- Với thùng 60 cái, ghi «620 chiếc» ra 10 thùng và 20 chiếc lẻ (số trong Excel là 620/60). Ghi «620» ra 620 thùng.
+- Nếu thiếu quy cách, hai nơi ghi khác nhau, hoặc viết «gói» mà quy cách chỉ ghi «cái», dòng được tô vàng và tạm bỏ khỏi file xuất. Nháy đúp để sửa số thùng.
 - Ghi 10T với ĐVT «thùng 20 hộp» -> 10 thùng.
 - Khi đọc ảnh, 5T+8 được hiểu là 5T x 8 -> 40. Phép cộng nhập tay vẫn tính bình thường.
 Cột ĐVT trong bảng Kết quả giúp bạn đối chiếu trước khi nhập KiotViet.

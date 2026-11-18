@@ -163,14 +163,15 @@ def restore_output_mapping(
   for product in products:
     qty = saved.get(product.code)
     raw = previous.get(product.stt)
+    parsed = parse_qty(raw, product.ordered_qty, product.unit, product_name=product.name)
     if qty is None:
-      if raw is not None and parse_qty(raw, product.ordered_qty, product.unit) is None:
+      if raw is not None and parsed is None:
         mapping[product.stt] = raw
       continue
     if not math.isfinite(qty) or qty < 0:
       return None
     mapping[product.stt] = (
-      raw if raw is not None and parse_qty(raw, product.ordered_qty, product.unit) == qty
+      raw if raw is not None and parsed is not None and math.isclose(parsed, qty, rel_tol=1e-15)
       else f"={Decimal(str(qty)):f}"
     )
   return mapping

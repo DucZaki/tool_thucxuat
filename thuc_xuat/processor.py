@@ -81,6 +81,61 @@ _PACKAGE_UNITS = frozenset({
 })
 _COUNT_WITH_UNIT = re.compile(r"(\d+(?:[.,]\d+)?)\s*([a-z]+)")
 _OCR_PACK_PLUS = re.compile(r"\d+(?:[.,]\d+)?\s*(?:t|thung)\s*\+\s*(\d+(?:[.,]\d+)?)")
+_CARTON = r"(?:thung\b(?:\s*\(\s*t\s*\))?|t\b)"
+_PACK_ITEM = r"\d+(?:[.,]\d+)?\s*(?:" + "|".join(sorted(_COUNT_UNITS)) + r")\b"
+_PACK_SPEC = re.compile(
+  rf"\b{_CARTON}[\s_(/:=–-]*(?P<after>{_PACK_ITEM})"
+  rf"|(?P<before>{_PACK_ITEM})\s*/\s*{_CARTON}"
+)
+_INVERSE_CARTON = re.compile(rf"^{_PACK_ITEM}\s*/\s*{_CARTON}")
+_COMPOUND_COUNT = re.compile(
+  rf"\d\s*(?:[-–—~]|den)\s*{_PACK_ITEM}|{_PACK_ITEM}\s*(?:[x×*/+]|hoac)\s*{_PACK_ITEM}"
+)
+
+
+def _carton_handwriting(raw: Any, unit: Any) -> re.Match | None:
+  written = _COUNT_WITH_UNIT.fullmatch(_plain_unit(raw))
+  if not written or written[2] not in ("goi", "cai", "chiec"):
+    return None
+  target = _plain_unit(unit).replace("_", " ")
+  return written if re.match(_CARTON, target) or _INVERSE_CARTON.match(target) else None
+
+
+def needs_carton_review(raw: Any, unit: Any, qty: int | float | None) -> bool:
+  return qty is None and _carton_handwriting(raw, unit) is not None
+
+
+def carton_review_message(skipped: list[OutputRow]) -> str:
+  rows = [str(r.stt) for r in skipped if needs_carton_review(r.raw, r.unit, None)]
+  if not rows:
+    return ""
+  return "Chưa xuất do chưa xác định được quy cách thùng ở STT " + ", ".join(rows) + "."
+
+
+def _carton_factor(unit: Any, product_name: str, written_unit: str) -> float | None:
+  specs: set[tuple[float, str]] = set()
+  for is_unit, field in ((True, unit), (False, product_name)):
+    text = _plain_unit(field).replace("_", " ")
+    if _COMPOUND_COUNT.search(text):
+      return None
+    if is_unit:
+      items = _COUNT_WITH_UNIT.findall(text)
+    else:
+      items = []
+      for spec in _PACK_SPEC.finditer(text):
+        items.extend(_COUNT_WITH_UNIT.findall(spec["after"] or spec["before"]))
+    for amount, label in items:
+      if label not in _COUNT_UNITS:
+        continue
+      specs.add((float(amount.replace(",", ".")), "cai" if label == "chiec" else label))
+  if len(specs) == 1:
+    factor, label = specs.pop()
+    bare_sizes = re.findall(r"\(\s*(\d+(?:[.,]\d+)?)\s*\)", _plain_unit(unit))
+    if any(float(size.replace(",", ".")) != factor for size in bare_sizes):
+      return None
+    if factor > 0 and math.isfinite(factor) and label == ("cai" if written_unit == "chiec" else written_unit):
+      return factor
+  return None
 
 def _plain_unit(text: Any) -> str:
   normalized = unicodedata.normalize("NFD", str(text or "").strip().lower())
@@ -181,23 +236,6 @@ def pack_factor(unit: Any) -> int | float | None:
   return None
 
 
-def _looks_like_t_read_as_7(compact: str, ordered_qty: Any) -> bool:
-  """'47' khi SL đặt là 4 → gần như chắc chắn là '4T' (model đọc T thành 7)."""
-  if not re.fullmatch(r"\d+7", compact) or len(compact) < 2:
-    return False
-  try:
-    ordered = float(ordered_qty)  # type: ignore[arg-type]
-  except (TypeError, ValueError):
-    return False
-  if ordered <= 0:
-    return False
-  lead = int(compact[:-1])
-  whole = int(compact)
-  if lead <= 0:
-    return False
-  return abs(lead - ordered) < abs(whole - ordered)
-
-
 def _prefer_ordered(whole: int, lead: int, ordered_qty: Any, prefer_lead: bool) -> int:
   """Chọn cách đọc khớp SL đặt: '21x24' → 21×24 hay 2T×24."""
   try:
@@ -240,6 +278,8 @@ def parse_qty(
   raw: Any,
   ordered_qty: float | int | None = None,
   unit: Any = None,
+  *,
+  product_name: str = "",
 ) -> int | float | None:
   """
   Chuyển ghi chú thực xuất thành số.
@@ -250,6 +290,7 @@ def parse_qty(
   - Có dấu nhân -> nhân: '3T*3' -> 9, '5T x 24' -> 120
   - '5T+8' đọc từ ảnh -> ưu tiên 5T x 8. Biểu thức nhập tay có tiền tố =.
   - '120 gói' với ĐVT 'thùng(T)/60 gói' -> 2 thùng. Chỉ chia khi khớp đơn vị nhỏ.
+  - Nếu ĐVT chỉ ghi thùng, dùng quy cách thùng/gói hoặc thùng/cái trong tên hàng.
   - Số trần hoặc số đã ghi theo ĐVT đích giữ nguyên.
   - Số lẻ giữ nguyên: '5,5' -> 5.5
   """
@@ -272,6 +313,12 @@ def parse_qty(
   if s in TICK_MARKS:
     value = _as_number(ordered_qty)
     return value if isinstance(value, (int, float)) else None
+  if written := _carton_handwriting(s, unit):
+    factor = _carton_factor(unit, product_name, written[2])
+    if factor is None:
+      return None
+    result = float(written[1].replace(",", ".")) / factor
+    return _to_number(str(result)) if math.isfinite(result) else None
   converted = _quantity_in_excel_unit(s, unit)
   if converted is not None:
     return converted
@@ -293,11 +340,6 @@ def parse_qty(
       return None
     base = _to_number(m.group(1))
     factors = _explicit_factors(s)
-    # "47" mà SL đặt là 4 → sửa thành "4T" (AI đọc chữ T viết tay thành số 7).
-    if not factors and _looks_like_t_read_as_7(compact, ordered_qty):
-      fixed = _to_number(compact[:-1])
-      if fixed is not None:
-        base = fixed
 
   if base is None:
     return None
@@ -371,7 +413,7 @@ def build_output(
 
   for p in products:
     raw = thuc_xuat_map.get(p.stt)
-    qty = parse_qty(raw, p.ordered_qty, p.unit)
+    qty = parse_qty(raw, p.ordered_qty, p.unit, product_name=p.name)
     row = OutputRow(
       stt=p.stt, code=p.code, name=p.name, raw=raw, qty=qty or 0, unit=p.unit
     )

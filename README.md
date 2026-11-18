@@ -105,8 +105,8 @@ Thư mục xuất đổi được trong `config.json` (`output_dir`), mặc đ�
 
 STT trên phiếu = thứ tự dòng Excel (dòng 2 = STT 1).
 
-Chỉ chia theo quy cách khi đơn vị đếm viết tay khớp đơn vị nhỏ trong Excel.
-Ví dụ `120 gói` chia cho 60 gói/thùng. Số trần và số đã theo ĐVT đích giữ nguyên.
+Khi xuất theo thùng, app đối chiếu quy cách trong cả ĐVT và tên hàng. Với thùng 60 cái, `620 chiếc` cho kết quả 620/60 thùng (10 thùng và 20 chiếc lẻ). Cái và chiếc được tính như nhau. Nếu chỉ ghi `620`, app hiểu là 620 theo ĐVT của Excel.
+Nếu ghi gói mà quy cách chỉ có cái, thiếu quy cách hoặc hai cột ghi khác nhau, app giữ chữ viết tay trong bảng, tô vàng dòng và bỏ dòng đó khỏi file xuất. Nháy đúp để nhập số thùng khi xác định được số lượng.
 Phép nhân ghi trên phiếu vẫn tính như trước. Phép cộng nhập khi sửa ô vẫn dùng dấu `+`.
 Bảng Kết quả có cột **ĐVT** cạnh cột «Đọc từ ảnh» để bạn đối chiếu từng dòng.
 

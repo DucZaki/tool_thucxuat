@@ -12,9 +12,10 @@ from thuc_xuat.output_edit import (
   OutputFormatError,
   list_outputs,
   load_sheet,
+  restore_output_mapping,
   save_sheet,
 )
-from thuc_xuat.processor import OutputRow, save_output
+from thuc_xuat.processor import OutputRow, Product, build_output, save_output
 
 
 def _make_output(folder: Path, name: str, include_name: bool) -> Path:
@@ -28,6 +29,17 @@ def _make_output(folder: Path, name: str, include_name: bool) -> Path:
 
 
 class LoadSheetTests(unittest.TestCase):
+  def test_reopen_fractional_carton_keeps_handwritten_unit(self):
+    products = [Product(1, "001", "Bánh (60 cái/thùng)", 10, "thùng")]
+    mapping = {1: "620 chiếc"}
+    included, _ = build_output(products, mapping)
+    with tempfile.TemporaryDirectory() as tmp:
+      path = Path(tmp) / "thung.xlsx"
+      save_output(included, path)
+      sheet = load_sheet(path)
+      self.assertAlmostEqual(sheet.rows[0].qty, 620 / 60)
+      self.assertEqual(restore_output_mapping(products, sheet, mapping), mapping)
+
   def test_reads_two_columns(self):
     with tempfile.TemporaryDirectory() as tmp:
       path = _make_output(Path(tmp), "a.xlsx", include_name=False)

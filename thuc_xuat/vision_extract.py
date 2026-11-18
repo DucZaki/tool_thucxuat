@@ -69,7 +69,7 @@ Quy tắc:
 - Cột này không dùng dấu tick. Nét giống ✓, ✔, V, Y hay gạch chéo đều là dấu bỏ dòng: ghi "X".
   Ô trống thực sự → bỏ STT đó.
 - Giữ đơn vị viết tay: "14 con", "5,5", "1T", "10H", "5T x 24".
-- Nếu thực xuất ghi "120 gói", trả đủ "120 gói". Chỉ chép đơn vị nằm trong chính ô viết tay.
+- Nếu ghi "620 gói", "620 cái" hay "620 chiếc", chép cả số và đơn vị. Nếu chỉ ghi "620", trả "620". Chỉ chép đơn vị nằm trong chính ô viết tay.
 - Nhìn kỹ dấu x sau chữ T, vì nét x viết tay dễ giống dấu +. Ví dụ "5T x 8" chép đủ dấu x.
 - Chữ T viết tay giống số 7 → ghi T: "1T", "4T", "10T", không ghi 17/47/107.
 - Không tự nhân/quy đổi.
@@ -201,6 +201,9 @@ def _is_product_name(value: str, product_name: str) -> bool:
   v = _norm_name(value)
   n = _norm_name(product_name)
   if not v or not n:
+    return False
+  # A count may also occur in the printed packing specification on this row.
+  if re.fullmatch(r"\d+(?:\s+\d+)?\s*(?:cai|chiec|goi)?", v):
     return False
   if v == n or (len(v) >= 4 and v in n):
     return True

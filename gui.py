@@ -35,9 +35,11 @@ from thuc_xuat.pipeline import BatchResult, ProcessResult, process_batch_like_ch
 from thuc_xuat.processor import (
   build_output,
   calculate_manual_qty,
+  carton_review_message,
   default_output_path,
   expected_qty,
   load_products,
+  needs_carton_review,
   parse_qty,
   save_output,
 )
@@ -954,7 +956,8 @@ class ThucXuatApp(tk.Tk):
       "Quy tắc:\n"
       "• X (hoặc nét bị đọc thành Y) → bỏ dòng\n"
       "• Dấu nhân: 3T*3 → 9. Khi đọc ảnh, 5T+8 được hiểu là 5T x 8 → 40.\n"
-      "• ĐVT «thùng(T)/60 gói» và phiếu ghi 120 gói → 2 thùng.\n"
+      "• ĐVT thùng, ghi 120 gói với quy cách 60 gói/thùng → 2 thùng.\n"
+      "  Quy cách có thể nằm ở cột ĐVT hoặc tên hàng khi ĐVT chỉ ghi thùng.\n"
       "• Số trần hoặc số đã theo ĐVT trong Excel được giữ nguyên, ví dụ 2T → 2.\n"
       "• Nét giống ✓ trên ảnh được coi là X → bỏ dòng\n"
       "• Gặp ảnh lỗi: bấm lại nút đọc để thử những ảnh chưa đọc được.\n\n"
@@ -1101,6 +1104,9 @@ class ThucXuatApp(tk.Tk):
         f"\n\nCòn {len(batch.pending_images)} ảnh cần đọc lại. "
         "Bấm «Đọc phiếu và xuất Excel» để chạy tiếp."
       )
+    for result in batch.results:
+      if detail := carton_review_message(result.skipped):
+        issue_text += f"\n\n{result.output_path.name}: {detail} Nháy đúp dòng vàng để nhập số thùng."
 
     if batch.fail_count and batch.ok_count:
       self.status.config(text=f"Xong: {batch.ok_count} OK, {batch.fail_count} lỗi")
@@ -1124,7 +1130,7 @@ class ThucXuatApp(tk.Tk):
     total_rows = sum(len(r.included) for r in batch.results)
     self.status.config(text=f"Đã xuất {batch.ok_count} file · {total_rows} dòng. Kiểm tra số lượng trong bảng kết quả.")
     if issue_text:
-      messagebox.showwarning("Đã xuất Excel, còn ảnh cần kiểm tra", f"Đã xuất {batch.ok_count} file.{issue_text}")
+      messagebox.showwarning("Đã xuất Excel, còn mục cần kiểm tra", f"Đã xuất {batch.ok_count} file.{issue_text}")
 
   def _fill_preview(self) -> None:
     self._cancel_cell_editor()
@@ -1153,9 +1159,11 @@ class ThucXuatApp(tk.Tk):
 
     for p in products:
       raw = thuc_xuat_map.get(p.stt, "")
-      qty = parse_qty(raw, p.ordered_qty, p.unit)
+      qty = parse_qty(raw, p.ordered_qty, p.unit, product_name=p.name)
       tags: list[str] = []
-      if qty is None:
+      if needs_carton_review(raw, p.unit, qty):
+        tags.append("warn")
+      elif qty is None:
         tags.append("skip")
       else:
         expected = expected_qty(p.ordered_qty, raw)
@@ -1266,7 +1274,7 @@ class ThucXuatApp(tk.Tk):
         if not re.fullmatch(
           r"(?:[✓✔vV>/√]|\d+(?:[.,]\d+)?\s*[a-zà-ỹ]+(?:\s*[*x×]\s*\d+(?:[.,]\d+)?\s*[a-zà-ỹ]*)?)",
           value, re.IGNORECASE,
-        ) or parse_qty(value, product.ordered_qty, product.unit) is None:
+        ) or parse_qty(value, product.ordered_qty, product.unit, product_name=product.name) is None:
           raise
         mapping[stt] = value
       else:
