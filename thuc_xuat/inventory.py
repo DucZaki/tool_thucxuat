@@ -345,3 +345,74 @@ def export_inventory(rows, catalog, template, output, price_source="Giá vốn")
   finally:
     wb.close()
   return output
+
+
+def inventory_output_paths(photos, folder):
+  """Give every image a distinct, stable output name, including equal image stems."""
+  folder = Path(folder)
+  used = set()
+  result = {}
+  for photo in photos:
+    stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", Path(photo).stem).strip(" .") or "Anh"
+    base = f"KiemKe_{stem}"
+    name = base
+    index = 2
+    while name.casefold() in used:
+      name = f"{base}_{index}"
+      index += 1
+    used.add(name.casefold())
+    result[photo] = folder / f"{name}.xlsx"
+  return result
+
+
+def load_inventory_output(path):
+  """Read one exported inventory workbook for editing in the inventory tab."""
+  path = Path(path)
+  wb = load_workbook(path, read_only=True, data_only=True)
+  try:
+    ws = next((s for s in wb if tuple(s.cell(1, c).value for c in range(1, 8)) == HEADERS), None)
+    if ws is None:
+      raise ValueError("File cần đúng 7 cột nhập hàng ở dòng đầu.")
+    rows = []
+    for sheet_row, values in enumerate(ws.iter_rows(min_row=2, max_col=7, values_only=True), 2):
+      code = str(values[0] or "").strip()
+      if not code:
+        continue
+      rows.append(CountRow(str(path), sheet_row, str(values[1] or ""), str(values[2] or ""),
+                           str(values[6] if values[6] is not None else ""), numeric(values[6]), code))
+    return rows
+  finally:
+    wb.close()
+
+
+def save_inventory_output_row(path, row, catalog, price_source="Giá vốn", original_code=None):
+  """Save a changed row while retaining the template's sheets, tables and formatting."""
+  path = Path(path)
+  item = catalog[row.code]
+  price = item.cost if price_source == "Giá vốn" else item.sale
+  if numeric(row.qty) is None:
+    raise ValueError("Số lượng không hợp lệ.")
+  wb = load_workbook(path)
+  try:
+    ws = next((s for s in wb if tuple(s.cell(1, c).value for c in range(1, 8)) == HEADERS), None)
+    if ws is None or row.stt < 2 or ws.cell(row.stt, 1).value is None or (
+      original_code is not None and str(ws.cell(row.stt, 1).value) != original_code
+    ):
+      raise ValueError("Dòng trong file đã thay đổi. Hãy mở lại file để sửa.")
+    changed_code = str(ws.cell(row.stt, 1).value) != item.code
+    if changed_code and price is None:
+      raise ValueError("Mã hàng thiếu đơn giá hợp lệ.")
+    values = [(1, item.code), (2, item.name), (3, item.unit), (7, row.qty)]
+    if changed_code:
+      values.append((4, price))
+    for column, value in values:
+      ws.cell(row.stt, column).value = value
+    with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".xlsx", delete=False) as temp:
+      staged = Path(temp.name)
+    try:
+      wb.save(staged)
+      staged.replace(path)
+    finally:
+      staged.unlink(missing_ok=True)
+  finally:
+    wb.close()

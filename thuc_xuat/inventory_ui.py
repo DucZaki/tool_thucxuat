@@ -8,7 +8,10 @@ from tkinter import ttk, filedialog, messagebox
 from thuc_xuat.cancel import CancelledByUser
 from thuc_xuat.config import output_dir, set_config_value
 from thuc_xuat.inventory_defaults import inventory_inputs
-from thuc_xuat.inventory import load_catalog, read_inventory_page, match_inventory, export_inventory, quantity
+from thuc_xuat.inventory import (
+  load_catalog, read_inventory_page, match_inventory, export_inventory, quantity,
+  inventory_output_paths, load_inventory_output, save_inventory_output_row,
+)
 from thuc_xuat.nim_client import NimError, NimVision, MODELS
 
 
@@ -20,6 +23,9 @@ class InventoryPage(ttk.Frame):
     self.photos = []
     self.rows = []
     self.cache = {}
+    self.output_paths = {}
+    self.output_path = None
+    self.output_rows = []
     self.catalog_path = tk.StringVar()
     self.template_path = tk.StringVar()
     self.price_source = tk.StringVar(value="Giá vốn")
@@ -27,7 +33,7 @@ class InventoryPage(ttk.Frame):
     self.running = False
     self.after(120, self.poll)
     self.columnconfigure(1, weight=1)
-    self.rowconfigure(5, weight=1)
+    self.rowconfigure(6, weight=1)
     for index, (label, variable) in enumerate((("Danh mục sản phẩm", self.catalog_path), ("Mẫu nhập hàng", self.template_path))):
       ttk.Label(self, text=label).grid(row=index, column=0, sticky="w", padx=(0, 10))
       ttk.Entry(self, textvariable=variable, state="readonly").grid(row=index, column=1, sticky="ew", pady=4)
@@ -48,9 +54,18 @@ class InventoryPage(ttk.Frame):
     self.read_button.pack(side=tk.LEFT)
     ttk.Button(tools, text="Dừng", command=self.stop).pack(side=tk.LEFT, padx=6)
     ttk.Button(tools, text="Sửa dòng", command=self.edit).pack(side=tk.LEFT)
-    ttk.Button(tools, text="Xuất file nhập hàng", command=self.export).pack(side=tk.RIGHT)
+    ttk.Button(tools, text="Xuất mỗi ảnh một file", command=self.export).pack(side=tk.RIGHT)
+    outputs = ttk.Frame(self)
+    outputs.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(0, 8))
+    ttk.Label(outputs, text="File kiểm kê").pack(side=tk.LEFT)
+    self.output_var = tk.StringVar()
+    self.output_combo = ttk.Combobox(outputs, textvariable=self.output_var, state="readonly")
+    self.output_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=8)
+    self.output_combo.bind("<<ComboboxSelected>>", self.select_output)
+    ttk.Button(outputs, text="Mở file…", command=self.open_output).pack(side=tk.LEFT)
+    ttk.Button(outputs, text="Xem ảnh đang đọc", command=self.show_read_rows).pack(side=tk.LEFT, padx=(6, 0))
     holder = ttk.Frame(self)
-    holder.grid(row=5, column=0, columnspan=3, sticky="nsew")
+    holder.grid(row=6, column=0, columnspan=3, sticky="nsew")
     holder.rowconfigure(0, weight=1)
     holder.columnconfigure(0, weight=1)
     columns = ("image", "stt", "raw_name", "actual", "code", "name", "unit", "qty", "issue")
@@ -68,7 +83,7 @@ class InventoryPage(ttk.Frame):
     horizontal.grid(row=1, column=0, sticky="ew")
     self.tree.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
     self.note = ttk.Label(self, text="Thêm ảnh để đọc và xuất nhập hàng. Nháy đúp nếu muốn sửa.", style="Muted.TLabel")
-    self.note.grid(row=6, column=0, columnspan=3, sticky="w", pady=6)
+    self.note.grid(row=7, column=0, columnspan=3, sticky="w", pady=6)
     catalog_path, template_path = inventory_inputs()
     try:
       self.catalog = load_catalog(catalog_path)
@@ -133,7 +148,11 @@ class InventoryPage(ttk.Frame):
     self.photos.clear()
     self.rows.clear()
     self.cache.clear()
+    self.output_paths.clear()
+    self.output_path = None
+    self.output_rows = []
     self.images.delete(0, tk.END)
+    self._refresh_outputs()
     self.refresh()
 
   def read(self):
@@ -211,19 +230,22 @@ class InventoryPage(ttk.Frame):
 
   def refresh(self):
     self.tree.delete(*self.tree.get_children())
-    for index, row in enumerate(self.rows):
+    displayed = self.output_rows if self.output_path else self.rows
+    for index, row in enumerate(displayed):
       item = self.catalog.get(row.code)
       values = (Path(row.image).name, row.stt or "", row.name, row.actual, row.code,
                 item.name if item else "", item.unit if item else row.unit,
                 row.qty if row.qty is not None else "", row.issue)
       self.tree.insert("", "end", iid=str(index), values=values, tags=("warn",) if row.issue or not row.code else ())
-    pending = sum(bool(row.issue or not row.code or row.qty is None) for row in self.rows)
-    self.note.config(text=f"{len(self.rows)} dòng · {pending} dòng có ghi chú. Có thể xuất ngay hoặc nháy đúp để sửa.")
+    pending = sum(bool(row.issue or not row.code or row.qty is None) for row in displayed)
+    prefix = f"Đang sửa {self.output_path.name} · " if self.output_path else ""
+    self.note.config(text=f"{prefix}{len(displayed)} dòng · {pending} dòng có ghi chú. Nháy đúp để sửa.")
 
   def edit(self):
     if not self.available() or not self.tree.selection():
       return
-    row = self.rows[int(self.tree.selection()[0])]
+    displayed = self.output_rows if self.output_path else self.rows
+    row = displayed[int(self.tree.selection()[0])]
     window = tk.Toplevel(self)
     window.title("Xác nhận sản phẩm và số lượng")
     window.geometry("850x300")
@@ -239,7 +261,7 @@ class InventoryPage(ttk.Frame):
       from thuc_xuat.inventory import candidates_for, CountRow
       choices.clear()
       candidates = candidates_for(CountRow("", 0, search.get(), row.unit, ""), self.catalog, 35)
-      if row.code and self.catalog[row.code] not in candidates:
+      if row.code in self.catalog and self.catalog[row.code] not in candidates:
         candidates.insert(0, self.catalog[row.code])
       for item in candidates:
         choices[f"{item.code} | {item.name} | {item.unit}"] = item.code
@@ -257,7 +279,12 @@ class InventoryPage(ttk.Frame):
         if code not in self.catalog:
           raise ValueError("Chọn mã trong danh mục.")
         value = quantity(qty.get())
-        row.code, row.qty, row.issue = code, value, ""
+        if self.output_path:
+          changed = type(row)(row.image, row.stt, row.name, row.unit, row.actual, value, code)
+          save_inventory_output_row(self.output_path, changed, self.catalog, self.price_source.get(), row.code)
+          self.output_rows = load_inventory_output(self.output_path)
+        else:
+          row.code, row.qty, row.issue = code, value, ""
         self.refresh()
         window.destroy()
       except ValueError as exc:
@@ -285,14 +312,73 @@ class InventoryPage(ttk.Frame):
     if not self.template_path.get():
       messagebox.showwarning("Thiếu mẫu", "Chọn file mẫu nhập hàng.", parent=self)
       return
-    path = filedialog.asksaveasfilename(parent=self, defaultextension=".xlsx", initialdir=str(output_dir()),
-                                      initialfile="KiemKe_NhapHang.xlsx", filetypes=[("Excel", "*.xlsx")])
-    if not path:
+    if not self.photos:
+      messagebox.showwarning("Chưa có ảnh", "Thêm ảnh kiểm kê trước khi xuất.", parent=self)
+      return
+    folder = filedialog.askdirectory(parent=self, title="Chọn thư mục lưu các phiếu kiểm kê", initialdir=str(output_dir()))
+    if not folder:
       return
     try:
-      if Path(path).resolve() == Path(self.catalog_path.get()).resolve():
-        raise ValueError("Chọn file kết quả khác danh mục gốc.")
-      export_inventory(self.rows, self.catalog, self.template_path.get(), path, self.price_source.get())
-      messagebox.showinfo("Đã xuất nhập hàng", path, parent=self)
+      paths = inventory_output_paths(self.photos, folder)
+      grouped = {photo: [row for row in self.rows if row.image == photo] for photo in self.photos}
+      for photo, rows in grouped.items():
+        if not rows or any(row.code not in self.catalog or row.qty is None for row in rows):
+          raise ValueError(f"{Path(photo).name} chưa đủ mã hàng hoặc số lượng để xuất.")
+        if paths[photo].resolve() in (Path(self.catalog_path.get()).resolve(), Path(self.template_path.get()).resolve()):
+          raise ValueError("File kết quả trùng với danh mục hoặc file mẫu.")
+      if any(path.is_file() for path in paths.values()) and not messagebox.askyesno(
+        "File đã tồn tại", "Một số file kiểm kê đã tồn tại trong thư mục. Xuất lại sẽ ghi đè các file đó. Tiếp tục?", parent=self,
+      ):
+        return
+      for photo, path in paths.items():
+        export_inventory(grouped[photo], self.catalog, self.template_path.get(), path, self.price_source.get())
+        self.output_paths[photo] = path
+      self._refresh_outputs()
+      self._show_output(paths[self.photos[0]])
+      messagebox.showinfo("Đã xuất nhập hàng", f"Đã tạo {len(paths)} file trong:\n{folder}", parent=self)
     except Exception as exc:
       messagebox.showerror("Chưa xuất được", str(exc), parent=self)
+
+  def _refresh_outputs(self):
+    self._files = list(dict.fromkeys(path for path in self.output_paths.values() if path.is_file()))
+    if self.output_path and self.output_path.is_file() and self.output_path not in self._files:
+      self._files.append(self.output_path)
+    self.output_combo["values"] = [str(path) for path in self._files]
+    if self.output_path in self._files:
+      self.output_combo.current(self._files.index(self.output_path))
+    else:
+      self.output_var.set("")
+
+  def _show_output(self, path):
+    try:
+      rows = load_inventory_output(path)
+    except Exception as exc:
+      messagebox.showerror("Không mở được file", str(exc), parent=self)
+      return
+    self.output_path = Path(path)
+    self.output_rows = rows
+    self._refresh_outputs()
+    self.refresh()
+
+  def select_output(self, _event=None):
+    if not self.available():
+      return
+    index = self.output_combo.current()
+    if 0 <= index < len(self._files):
+      self._show_output(self._files[index])
+
+  def open_output(self):
+    if not self.available():
+      return
+    path = filedialog.askopenfilename(parent=self, title="Chọn file kiểm kê đã xuất để sửa",
+                                      initialdir=str(output_dir()), filetypes=[("Excel", "*.xlsx")])
+    if path:
+      self._show_output(Path(path).resolve())
+
+  def show_read_rows(self):
+    if not self.available():
+      return
+    self.output_path = None
+    self.output_rows = []
+    self._refresh_outputs()
+    self.refresh()

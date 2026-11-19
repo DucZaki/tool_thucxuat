@@ -17,6 +17,8 @@ Bấm đọc lại để tiếp tục ảnh lỗi, dữ liệu đã đọc đư�
 Khi xuất, app giữ cấu trúc và định dạng mẫu, xóa dòng ví dụ, dùng **Giá vốn**
 trong danh mục cho **Đơn giá**, để trống **Giảm giá** và **Giảm giá (%)**.
 Có thể chọn Giá bán trên giao diện.
+Mỗi ảnh kiểm kê xuất thành một file Excel riêng. Có thể chọn từng file đã xuất,
+mở file cũ và sửa mã hàng hoặc số lượng trực tiếp trong tab Kiểm kê.
 
 File **Thực xuất** có hai cột **Mã hàng** và **Số lượng chuyển**, được tạo thành
 Excel Table. App vẫn mở và sửa được file dùng tên cột cũ.

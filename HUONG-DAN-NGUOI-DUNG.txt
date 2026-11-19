@@ -76,7 +76,11 @@ KIỂM KÊ
    Dùng «Chọn Excel…» nếu cần thay danh mục hoặc mẫu.
 2. Thêm ảnh rồi bấm «Đọc ảnh và đối chiếu».
 3. Nếu cần sửa, chọn dòng, chọn mã và đơn vị trong danh sách, nhập số lượng rồi xác nhận.
-4. Bấm «Xuất file nhập hàng». App dùng Giá vốn theo mặc định.
+4. Bấm «Xuất mỗi ảnh một file», chọn thư mục lưu. Mỗi ảnh tạo một file nhập hàng
+   riêng. App dùng Giá vốn theo mặc định.
+5. Chọn file trong «File kiểm kê» hoặc bấm «Mở file…» để mở file đã xuất.
+   Nháy đúp một dòng, sửa mã hàng hoặc số lượng rồi xác nhận để lưu vào file đó.
+   Bấm «Xem ảnh đang đọc» để quay về các dòng nhận từ ảnh.
 
 XUẤT LẠI FILE KẾT QUẢ
 ----------------------

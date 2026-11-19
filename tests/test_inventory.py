@@ -12,7 +12,7 @@ from thuc_xuat.inventory import (
   CatalogItem, CountRow, HEADERS, candidates_for, export_inventory,
   load_catalog, match_inventory, normalize, quantity, read_inventory_page,
   quantity_for_item,
-  WrongInventoryImage,
+  WrongInventoryImage, inventory_output_paths, load_inventory_output, save_inventory_output_row,
 )
 from thuc_xuat.output_edit import load_sheet, save_sheet
 from thuc_xuat.processor import OutputRow, save_output
@@ -71,6 +71,26 @@ class InventoryTests(unittest.TestCase):
       with self.assertRaises(ValueError):
         export_inventory([row], self.catalog, template, self.folder / "out.xlsx")
     self.assertFalse((self.folder / "out.xlsx").exists())
+
+  def test_each_photo_gets_a_distinct_output_and_can_be_edited(self):
+    photos = [str(self.folder / "a" / "page.jpg"), str(self.folder / "b" / "page.png")]
+    paths = inventory_output_paths(photos, self.folder)
+    self.assertEqual([path.name for path in paths.values()], ["KiemKe_page.xlsx", "KiemKe_page_2.xlsx"])
+    template = self.template()
+    for index, photo in enumerate(photos, 1):
+      export_inventory([CountRow(photo, 1, "chả cá", "", str(index), index, "00123")],
+                       self.catalog, template, paths[photo])
+    first = load_inventory_output(paths[photos[0]])
+    second = load_inventory_output(paths[photos[1]])
+    self.assertEqual(([r.qty for r in first], [r.qty for r in second]), ([1], [2]))
+    first[0].qty = 7
+    save_inventory_output_row(paths[photos[0]], first[0], self.catalog)
+    self.assertEqual(load_inventory_output(paths[photos[0]])[0].qty, 7)
+    self.assertEqual(load_inventory_output(paths[photos[1]])[0].qty, 2)
+    wb = load_workbook(paths[photos[0]])
+    self.assertEqual(wb.active.tables["PurchaseOrderTemplate"].ref, "A1:M2")
+    self.assertEqual(wb.active["D2"].number_format, "#,##0.0####")
+    wb.close()
 
   def test_quantities_arithmetic_zero_and_units(self):
     for text, expected in (("1 + 8", 9), ("9+2", 11), ("3*8", 24), ("13 con", 13), ("0", 0), ("2,5", 2.5)):
