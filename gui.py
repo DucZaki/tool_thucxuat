@@ -539,9 +539,7 @@ class ThucXuatApp(tk.Tk):
     if self._busy:
       messagebox.showinfo("Đang xử lý", "Chờ app đọc ảnh xong rồi hãy cập nhật.")
       return
-    if self._update_info is not None:
-      self._confirm_update()
-      return
+    # Kiểm tra lại ngay lúc bấm: bản tìm thấy khi mở app có thể đã cũ.
     self._check_update_async(interactive=True)
 
   def _set_update_button(self, text: str, state: str = tk.NORMAL) -> None:
@@ -581,7 +579,7 @@ class ThucXuatApp(tk.Tk):
         f"— bấm «Cập nhật lên v{info.version}»"
       )
       if interactive:
-        self._confirm_update()
+        self._start_update(info)
       return
 
     self._update_info = None
@@ -600,10 +598,7 @@ class ThucXuatApp(tk.Tk):
         f"Bạn đang dùng bản mới nhất (v{__version__}).",
       )
 
-  def _confirm_update(self) -> None:
-    info = self._update_info
-    if info is None:
-      return
+  def _start_update(self, info: UpdateInfo) -> None:
     if not getattr(sys, "frozen", False):
       messagebox.showinfo(
         "Bản chạy thử",
@@ -619,19 +614,6 @@ class ThucXuatApp(tk.Tk):
       )
       return
 
-    notes = (info.notes or "").strip()
-    if len(notes) > 900:
-      notes = notes[:900] + "..."
-    mb = info.size / (1024 * 1024) if info.size else 0
-    text = (
-      f"Bản đang dùng: v{__version__}\n"
-      f"Bản mới: v{info.version}\n"
-      + (f"Dung lượng: {mb:.1f} MB\n" if mb else "")
-      + (f"\n{notes}\n" if notes else "")
-      + "\nApp sẽ tải, thay thế rồi tự mở lại. Tiếp tục?"
-    )
-    if not messagebox.askyesno("Cập nhật phần mềm", text):
-      return
     self._download_and_apply(info)
 
   def _download_and_apply(self, info: UpdateInfo) -> None:

@@ -134,7 +134,7 @@ App tự so phiên bản với GitHub Releases của repo `DucZaki/tool_thucxuat
 
 - Mở app → tự kiểm tra (không có mạng thì im lặng, app vẫn chạy).
 - Có bản mới → nút **«Cập nhật lên vX.Y.Z»** hiện ở hàng tuỳ chọn.
-- Bấm → tải (có %), thay thế file, tự mở lại. `config.json` và thư mục `KetQua\` **giữ nguyên**.
+- Bấm một lần → app kiểm tra lại Release mới nhất, tải (có %), thay thế file và tự mở lại. `config.json` và thư mục `KetQua\` **giữ nguyên**.
 
 ### Phát hành (người sửa code)
 

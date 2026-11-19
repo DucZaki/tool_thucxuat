@@ -148,9 +148,16 @@ def stage_zip(zip_path: str | Path, version: str) -> Path:
         shutil.rmtree(staged, ignore_errors=True)
     staged.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(zip_path) as zf:
+        for member in zf.infolist():
+            target = (staged / member.filename).resolve()
+            if not target.is_relative_to(staged.resolve()):
+                raise ValueError("Gói cập nhật chứa đường dẫn không hợp lệ.")
         zf.extractall(staged)
     inner = staged / "ThucXuatTool"
-    return inner if (inner / "ThucXuatTool.exe").exists() else staged
+    result = inner if (inner / "ThucXuatTool.exe").is_file() else staged
+    if not (result / "ThucXuatTool.exe").is_file():
+        raise ValueError("Gói cập nhật thiếu ThucXuatTool.exe.")
+    return result
 
 
 def can_write_app_dir() -> bool:
@@ -180,16 +187,17 @@ def launch_updater(staged_dir: str | Path) -> Path:
     script.write_text(
         "\ufeff" + "\n".join(
             [
-                "$ErrorActionPreference = 'SilentlyContinue'",
+                "$ErrorActionPreference = 'Stop'",
                 f"$appPid = {os.getpid()}",
                 "# Chờ app thoát (tối đa 2 phút)",
                 "for ($i = 0; $i -lt 240; $i++) {",
                 "  if (-not (Get-Process -Id $appPid -ErrorAction SilentlyContinue)) { break }",
                 "  Start-Sleep -Milliseconds 500",
                 "}",
+                f"if (Get-Process -Id $appPid -ErrorAction SilentlyContinue) {{ 'LOI: app chua thoat' | Out-File -FilePath {_ps_quote(log)} -Encoding utf8; exit 1 }}",
                 f"robocopy {_ps_quote(staged)} {_ps_quote(app)} /E /IS /IT /R:3 /W:1 /NFL /NDL /NJH /NJS | Out-Null",
                 "$code = $LASTEXITCODE",
-                f"if ($code -ge 8) {{ \"LOI cap nhat (robocopy $code)\" | Out-File -FilePath {_ps_quote(log)} -Encoding utf8 }}",
+                f"if ($code -ge 8) {{ \"LOI cap nhat (robocopy $code)\" | Out-File -FilePath {_ps_quote(log)} -Encoding utf8; exit $code }}",
                 f"Start-Process -FilePath {_ps_quote(exe)} -WorkingDirectory {_ps_quote(app)}",
                 f"Remove-Item -LiteralPath {_ps_quote(staged)} -Recurse -Force",
                 "",

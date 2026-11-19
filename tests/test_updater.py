@@ -152,6 +152,16 @@ class StageTests(unittest.TestCase):
       self.assertTrue((staged / "ThucXuatTool.exe").exists())
       self.assertTrue((staged / "_internal" / "lib.dll").exists())
 
+  def test_stage_zip_rejects_missing_exe(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      tmp_path = Path(tmp)
+      zip_path = tmp_path / "broken.zip"
+      with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("ThucXuatTool/readme.txt", "incomplete")
+      with patch.object(updater, "work_dir", return_value=tmp_path / "work"):
+        with self.assertRaisesRegex(ValueError, "thiếu ThucXuatTool.exe"):
+          stage_zip(zip_path, "9.9.9")
+
 
 if __name__ == "__main__":
   unittest.main()
