@@ -678,12 +678,7 @@ class ThucXuatApp(tk.Tk):
     except Exception as exc:
       self._on_update_failed(exc)
       return
-    messagebox.showinfo(
-      "Hoàn tất",
-      "App sẽ đóng và mở lại bản mới trong vài giây.\n\n"
-      "Nếu không thấy app mở lại, hãy mở ThucXuatTool.exe trong thư mục cũ.",
-    )
-    self.after(300, self.destroy)
+    self.destroy()
 
   def reexport_results(self) -> None:
     """Xuất lại các phiếu đã xử lý theo tuỳ chọn cột hiện tại (không đọc lại ảnh)."""
