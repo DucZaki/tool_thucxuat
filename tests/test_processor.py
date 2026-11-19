@@ -105,6 +105,14 @@ class ParseQtyTests(unittest.TestCase):
       ("620 gói", "thùng (40)", "Bánh (60 gói/thùng)", None),
       ("620 gói", "thùng", "Bánh (thùng 10 hộp x 6 gói)", None),
       ("620 gói", "gói", "Bánh (thùng 60 gói)", 620),
+      ("48lon", "thùng (24lon)", "Nước", 2),
+      ("48 lon", "thùng", "Nước (24lon/thùng)", 2),
+      ("48 chai", "thùng_24chai", "Nước", 2),
+      ("64 hộp", "thùng_32hop", "Chả", 2),
+      ("9 túi", "thùng", "Mì (thùng 6 túi)", 1.5),
+      ("48 chai", "thùng", "Nước (thùng 24 lon)", None),
+      ("48 lon", "thùng 24lon", "Nước (thùng 30 lon)", None),
+      ("48 hộp", "thùng", "Chả", None),
     ]
     for raw, unit, name, expected in cases:
       with self.subTest(raw=raw, unit=unit, name=name):

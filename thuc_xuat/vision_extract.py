@@ -13,7 +13,7 @@ from thuc_xuat.cancel import CancelledByUser, check_cancel
 from thuc_xuat.config import image_band_count, load_config
 from thuc_xuat.image_prep import prepare_assignment_focus, prepare_page, split_image
 from thuc_xuat.nim_client import DEFAULT_MODEL, NimError, NimVision
-from thuc_xuat.processor import TICK_MARKS
+from thuc_xuat.processor import CARTON_ITEM_UNITS, TICK_MARKS
 
 
 def _file_revision(path: Path) -> tuple[Path, int, int] | None:
@@ -69,7 +69,7 @@ Quy tắc:
 - Cột này không dùng dấu tick. Nét giống ✓, ✔, V, Y hay gạch chéo đều là dấu bỏ dòng: ghi "X".
   Ô trống thực sự → bỏ STT đó.
 - Giữ đơn vị viết tay: "14 con", "5,5", "1T", "10H", "5T x 24".
-- Nếu ghi "620 gói", "620 cái" hay "620 chiếc", chép cả số và đơn vị. Nếu chỉ ghi "620", trả "620". Chỉ chép đơn vị nằm trong chính ô viết tay.
+- Chép cả số và đơn vị viết tay (gói, cái, chiếc, chai, túi, lon, hộp), kể cả khi viết liền như "48lon". Nếu chỉ ghi "620", trả "620". Chỉ chép đơn vị nằm trong chính ô viết tay.
 - Nhìn kỹ dấu x sau chữ T, vì nét x viết tay dễ giống dấu +. Ví dụ "5T x 8" chép đủ dấu x.
 - Chữ T viết tay giống số 7 → ghi T: "1T", "4T", "10T", không ghi 17/47/107.
 - Không tự nhân/quy đổi.
@@ -203,7 +203,8 @@ def _is_product_name(value: str, product_name: str) -> bool:
   if not v or not n:
     return False
   # A count may also occur in the printed packing specification on this row.
-  if re.fullmatch(r"\d+(?:\s+\d+)?\s*(?:cai|chiec|goi)?", v):
+  quantity = re.fullmatch(r"\d+(?:\s+\d+)?\s*([a-z]+)?", v)
+  if quantity and (quantity[1] is None or quantity[1] in CARTON_ITEM_UNITS):
     return False
   if v == n or (len(v) >= 4 and v in n):
     return True

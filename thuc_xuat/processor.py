@@ -71,9 +71,10 @@ def calculate_manual_qty(text: str) -> int | float:
 # Phiếu không có chữ Y. Nét gạch chéo (X) hay bị đọc thành Y → vẫn là "bỏ dòng".
 _X_OR_Y_RE = re.compile(r"^(?:\d+(?:[.,]\d+)?)?[XY]$")
 
-_COUNT_UNITS = frozenset({
-  "goi", "hop", "khay", "con", "chai", "loc", "lon", "cai", "qua", "tui",
-  "bich", "hu", "cuon", "vien", "mieng", "vi", "coc", "ly", "cay", "chiec",
+CARTON_ITEM_UNITS = frozenset({"goi", "cai", "chiec", "chai", "tui", "lon", "hop"})
+_COUNT_UNITS = CARTON_ITEM_UNITS | frozenset({
+  "khay", "con", "loc", "qua",
+  "bich", "hu", "cuon", "vien", "mieng", "vi", "coc", "ly", "cay",
   "bo", "doi", "bao", "binh",
 })
 _PACKAGE_UNITS = frozenset({
@@ -95,7 +96,7 @@ _COMPOUND_COUNT = re.compile(
 
 def _carton_handwriting(raw: Any, unit: Any) -> re.Match | None:
   written = _COUNT_WITH_UNIT.fullmatch(_plain_unit(raw))
-  if not written or written[2] not in ("goi", "cai", "chiec"):
+  if not written or written[2] not in CARTON_ITEM_UNITS:
     return None
   target = _plain_unit(unit).replace("_", " ")
   return written if re.match(_CARTON, target) or _INVERSE_CARTON.match(target) else None
